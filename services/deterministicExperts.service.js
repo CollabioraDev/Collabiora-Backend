@@ -888,7 +888,12 @@ function calculateAuthorRecencyScore(works, currentYear) {
  * @param {string|null} topic - Optional topic string to detect clinical trial intent
  * @param {boolean} forDashboard - If true, use dashboard-only formula: 75% last 1y + 25% last 2y + overall citations
  */
-function rankAuthorsByMetrics(authors, location = null, topic = null, forDashboard = false) {
+function rankAuthorsByMetrics(
+  authors,
+  location = null,
+  topic = null,
+  forDashboard = false,
+) {
   const searchCity = extractCityName(location);
   const searchState = extractStateName(location);
   const searchCountryCode = location ? extractCountryCode(location) : null;
@@ -944,8 +949,14 @@ function rankAuthorsByMetrics(authors, location = null, topic = null, forDashboa
       let finalScore;
       let dashboardScores = null;
       if (forDashboard) {
-        const last1y = author.recentWorks1y ?? (author.works || []).filter((w) => (w.year || 0) >= currentYear - 1).length;
-        const last2y = author.recentWorks ?? (author.works || []).filter((w) => (w.year || 0) >= currentYear - 2).length;
+        const last1y =
+          author.recentWorks1y ??
+          (author.works || []).filter((w) => (w.year || 0) >= currentYear - 1)
+            .length;
+        const last2y =
+          author.recentWorks ??
+          (author.works || []).filter((w) => (w.year || 0) >= currentYear - 2)
+            .length;
         const last1yNorm = Math.min(1, last1y / 10);
         const last2yNorm = Math.min(1, last2y / 15);
         const citeNorm = Math.min(1, citationCount / 3000);
@@ -1019,6 +1030,8 @@ function rankAuthorsByMetrics(authors, location = null, topic = null, forDashboa
 
       if (F < 0.4) finalScore *= 0.7;
 
+      // Location scoring: when user specifies a location, award bonus points based on match quality
+      // City match = strongest signal, state match = medium, country only = weak
       let locationScore = 0;
       if (searchCity && author.institutionNamesLower?.length) {
         const cityMatch = author.institutionNamesLower.some((inst) =>
@@ -1047,7 +1060,18 @@ function rankAuthorsByMetrics(authors, location = null, topic = null, forDashboa
         locationScore = 0.3;
       }
 
-      if (dashboardScores) dashboardScores.location = locationScore;
+      // IMPORTANT: When location is provided, inject the locationScore DIRECTLY into finalScore
+      // so that city/state-matched experts always outrank those with only country match.
+      // Weight: up to 0.2 bonus points for perfect city match (scaled by locationScore 0-1).
+      if (location && locationScore > 0) {
+        finalScore += 0.2 * locationScore;
+      }
+
+      if (dashboardScores) {
+        dashboardScores.location = locationScore;
+        // Also propagate the location boost to dashboardScores.final so the sort is consistent
+        dashboardScores.final = finalScore;
+      }
 
       return {
         ...author,
@@ -1638,11 +1662,146 @@ export async function findDeterministicExperts(
 /**
  * Format experts for API response
  */
+/**
+ * Build a human-readable location string from an expert's OpenAlex data.
+ * Priority: try to extract city from institution name → fall back to country name.
+ * e.g. "University of Toronto, Canada" or "San Francisco, United States"
+ */
+function buildHumanReadableLocation(expert) {
+  // Country code → full country name mapping (reverse of extractCountryCode)
+  const codeToCountry = {
+    CA: "Canada",
+    US: "United States",
+    GB: "United Kingdom",
+    DE: "Germany",
+    FR: "France",
+    CN: "China",
+    JP: "Japan",
+    AU: "Australia",
+    IN: "India",
+    BR: "Brazil",
+    MX: "Mexico",
+    IT: "Italy",
+    ES: "Spain",
+    KR: "South Korea",
+    NL: "Netherlands",
+    SE: "Sweden",
+    CH: "Switzerland",
+    NO: "Norway",
+    DK: "Denmark",
+    FI: "Finland",
+    BE: "Belgium",
+    AT: "Austria",
+    PT: "Portugal",
+    IE: "Ireland",
+    PL: "Poland",
+    RU: "Russia",
+    TR: "Turkey",
+    IL: "Israel",
+    SA: "Saudi Arabia",
+    ZA: "South Africa",
+    NG: "Nigeria",
+    EG: "Egypt",
+    KE: "Kenya",
+    SG: "Singapore",
+    MY: "Malaysia",
+    TH: "Thailand",
+    ID: "Indonesia",
+    PK: "Pakistan",
+    BD: "Bangladesh",
+    VN: "Vietnam",
+    PH: "Philippines",
+    TW: "Taiwan",
+    HK: "Hong Kong",
+    NZ: "New Zealand",
+    AR: "Argentina",
+    CO: "Colombia",
+    CL: "Chile",
+    PE: "Peru",
+    CZ: "Czech Republic",
+    RO: "Romania",
+    HU: "Hungary",
+    GR: "Greece",
+    UA: "Ukraine",
+    IR: "Iran",
+    IQ: "Iraq",
+    AE: "United Arab Emirates",
+    QA: "Qatar",
+    KW: "Kuwait",
+  };
+
+  const primaryCode =
+    expert.countryCode ||
+    (expert.countryCodes && expert.countryCodes[0]) ||
+    null;
+  const countryName = primaryCode ? (codeToCountry[primaryCode] || primaryCode) : null;
+
+  // --- Try to extract a city from the primary institution name ---
+  // Common patterns: "University of Toronto", "Harvard Medical School, Boston", etc.
+  // We look for well-known city keywords inside the institution name.
+  const knownCities = [
+    // North America
+    "Toronto", "Vancouver", "Montreal", "Calgary", "Ottawa", "Edmonton",
+    "Winnipeg", "Quebec", "Hamilton", "London", "Halifax",
+    "New York", "Los Angeles", "Chicago", "Houston", "Phoenix",
+    "Philadelphia", "San Antonio", "San Diego", "Dallas", "San Jose",
+    "Austin", "Jacksonville", "Fort Worth", "Columbus", "Charlotte",
+    "Indianapolis", "San Francisco", "Seattle", "Denver", "Boston",
+    "Nashville", "Detroit", "Portland", "Memphis", "Baltimore",
+    "Atlanta", "Miami", "Minneapolis", "Cleveland", "Pittsburgh",
+    "Raleigh", "Orlando", "Cincinnati", "Sacramento",
+    "Kansas City", "Salt Lake City", "St. Louis", "Milwaukee",
+    // Europe
+    "London", "Manchester", "Birmingham", "Glasgow", "Edinburgh", "Bristol",
+    "Paris", "Lyon", "Marseille", "Berlin", "Munich", "Hamburg", "Frankfurt",
+    "Amsterdam", "Rotterdam", "Brussels", "Zurich", "Geneva", "Vienna",
+    "Rome", "Milan", "Naples", "Madrid", "Barcelona", "Stockholm",
+    "Copenhagen", "Oslo", "Helsinki", "Warsaw", "Prague", "Budapest",
+    "Athens", "Lisbon", "Dublin", "Kiev",
+    // Asia
+    "Beijing", "Shanghai", "Guangzhou", "Shenzhen", "Tokyo", "Osaka",
+    "Seoul", "Busan", "Mumbai", "Delhi", "Bangalore", "Chennai",
+    "Hyderabad", "Kolkata", "Singapore", "Hong Kong", "Taipei",
+    "Bangkok", "Jakarta", "Manila", "Kuala Lumpur", "Dhaka", "Karachi",
+    // Other
+    "Sydney", "Melbourne", "Brisbane", "Perth", "Auckland",
+    "São Paulo", "Rio de Janeiro", "Buenos Aires", "Bogotá",
+    "Cairo", "Lagos", "Nairobi", "Johannesburg", "Cape Town",
+    "Tel Aviv", "Jerusalem", "Dubai", "Riyadh", "Doha",
+  ];
+
+  const primaryInstitution = expert.institutions && expert.institutions[0];
+  let detectedCity = null;
+  if (primaryInstitution) {
+    const instLower = primaryInstitution.toLowerCase();
+    for (const city of knownCities) {
+      if (instLower.includes(city.toLowerCase())) {
+        detectedCity = city;
+        break;
+      }
+    }
+  }
+
+  // Build readable string
+  if (detectedCity && countryName) {
+    return `${detectedCity}, ${countryName}`;
+  }
+  if (countryName) {
+    return countryName;
+  }
+  return null;
+}
+
 export function formatExpertsForResponse(experts) {
   return experts.map((expert) => ({
     name: expert.name,
     affiliation: expert.institutions[0] || null,
-    location: expert.countryCode ? `${expert.countryCode}` : null,
+    // Full human-readable location: "City, Country" or just "Country"
+    location: buildHumanReadableLocation(expert),
+    // Raw country code kept for any internal use
+    countryCode: expert.countryCode || null,
+    // All institution names (up to 3) so frontend can show more detail
+    allInstitutions: (expert.institutions || []).slice(0, 3),
     biography: expert.biography || null,
     orcid: expert.orcid || null,
     orcidUrl: expert.orcid ? `https://orcid.org/${expert.orcid}` : null,

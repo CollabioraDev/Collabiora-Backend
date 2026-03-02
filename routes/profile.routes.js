@@ -141,7 +141,7 @@ router.get("/profile/:userId/landing-stats", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // Forums Participated: distinct thread IDs where user authored (Thread) OR replied (Reply)
+  // Forums Participated: distinct thread IDs where user authored (Thread) OR replied (Reply)
     const [authoredThreadIds, repliedThreadIds] = await Promise.all([
       Thread.find({ authorUserId: uid }).select("_id").lean(),
       Reply.find({ authorUserId: uid }).distinct("threadId"),
@@ -156,10 +156,16 @@ router.get("/profile/:userId/landing-stats", async (req, res) => {
     // Community Posts
     const communityPosts = await Post.countDocuments({ authorUserId: uid });
 
+  // Communities Joined (via CommunityMembership)
+  const communitiesJoined = await CommunityMembership.countDocuments({
+    userId: uid,
+  });
+
     res.json({
       forumsParticipated,
       peopleFollowed,
       communityPosts,
+    communitiesJoined,
     });
   } catch (err) {
     if (err.name === "CastError")
