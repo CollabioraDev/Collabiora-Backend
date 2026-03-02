@@ -72,6 +72,7 @@ app.get("/", (_req, res) => {
 
 // Apply optional session middleware globally (for routes that need it)
 // Apply search limit middleware globally (sets device token cookie for anonymous users)
+//adada
 app.use(optionalSession);
 app.use(searchLimitMiddleware);
 
