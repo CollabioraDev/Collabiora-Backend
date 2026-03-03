@@ -87,7 +87,9 @@ export async function sendVerificationEmail(
           </div>
           
           <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
-            <p>&copy; ${new Date().getFullYear()} Collabiora. All rights reserved.</p>
+            <p style="margin: 4px 0;">If you have any questions, contact us at <a href="mailto:info@collabiora.com" style="color: #2F3C96; text-decoration: none;">info@collabiora.com</a>.</p>
+            <p style="margin: 4px 0;">Collabiora, Los Angeles, CA</p>
+            <p style="margin: 8px 0 0;">&copy; ${new Date().getFullYear()} Collabiora. All rights reserved.</p>
           </div>
         </body>
         </html>
@@ -105,7 +107,7 @@ export async function sendVerificationEmail(
         subject: "Verify Your Collabiora Email Address",
         html,
         // Add plain text version for better deliverability
-        text: `Hello ${username}!\n\nThank you for signing up for Collabiora. Please verify your email address to complete your registration and unlock all features.\n\nYour Verification Code: ${otp}\n(This code expires in 15 minutes)\n\nOr verify by clicking this link:\n${verificationLink}\n\nThe verification link will expire in 24 hours. If you didn't create an account with Collabiora, please ignore this email.\n\n© ${new Date().getFullYear()} Collabiora. All rights reserved.`,
+        text: `Hello ${username}!\n\nThank you for signing up for Collabiora. Please verify your email address to complete your registration and unlock all features.\n\nYour Verification Code: ${otp}\n(This code expires in 15 minutes)\n\nOr verify by clicking this link:\n${verificationLink}\n\nThe verification link will expire in 24 hours. If you didn't create an account with Collabiora, please ignore this email.\n\nIf you have any questions, contact us at info@collabiora.com.\nCollabiora, Los Angeles, CA\n\n© ${new Date().getFullYear()} Collabiora. All rights reserved.`,
       }),
     });
 
@@ -198,7 +200,9 @@ export async function sendPasswordResetEmail(
           </div>
           
           <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
-            <p>&copy; ${new Date().getFullYear()} Collabiora. All rights reserved.</p>
+            <p style="margin: 4px 0;">If you have any questions, contact us at <a href="mailto:info@collabiora.com" style="color: #2F3C96; text-decoration: none;">info@collabiora.com</a>.</p>
+            <p style="margin: 4px 0;">Collabiora, Los Angeles, CA</p>
+            <p style="margin: 8px 0 0;">&copy; ${new Date().getFullYear()} Collabiora. All rights reserved.</p>
           </div>
         </body>
         </html>
@@ -216,7 +220,7 @@ export async function sendPasswordResetEmail(
         subject: "Reset Your Collabiora Password",
         html,
         // Add plain text version for better deliverability
-        text: `Hello ${username}!\n\nWe received a request to reset your password for your Collabiora account. Click the link below to reset your password:\n\n${resetLink}\n\nIMPORTANT: This link will expire in 15 minutes and can only be used once. If you didn't request a password reset, please ignore this email and your password will remain unchanged.\n\n© ${new Date().getFullYear()} Collabiora. All rights reserved.`,
+        text: `Hello ${username}!\n\nWe received a request to reset your password for your Collabiora account. Click the link below to reset your password:\n\n${resetLink}\n\nIMPORTANT: This link will expire in 15 minutes and can only be used once. If you didn't request a password reset, please ignore this email and your password will remain unchanged.\n\nIf you have any questions, contact us at info@collabiora.com.\nCollabiora, Los Angeles, CA\n\n© ${new Date().getFullYear()} Collabiora. All rights reserved.`,
       }),
     });
 
@@ -290,7 +294,9 @@ export async function sendPasswordResetConfirmationEmail(email, username) {
           </div>
           
           <div style="text-align: center; margin-top: 20px; color: #999; font-size: 12px;">
-            <p>&copy; ${new Date().getFullYear()} Collabiora. All rights reserved.</p>
+            <p style="margin: 4px 0;">If you have any questions, contact us at <a href="mailto:info@collabiora.com" style="color: #2F3C96; text-decoration: none;">info@collabiora.com</a>.</p>
+            <p style="margin: 4px 0;">Collabiora, Los Angeles, CA</p>
+            <p style="margin: 8px 0 0;">&copy; ${new Date().getFullYear()} Collabiora. All rights reserved.</p>
           </div>
         </body>
         </html>
@@ -308,7 +314,7 @@ export async function sendPasswordResetConfirmationEmail(email, username) {
         subject: "Your Password Was Changed Successfully",
         html,
         // Add plain text version for better deliverability
-        text: `Hello ${username}!\n\nYour password was successfully changed on ${new Date().toLocaleString()}.\n\nIf you didn't make this change, please contact our support team immediately to secure your account.\n\n© ${new Date().getFullYear()} Collabiora. All rights reserved.`,
+        text: `Hello ${username}!\n\nYour password was successfully changed on ${new Date().toLocaleString()}.\n\nIf you didn't make this change, please contact our support team immediately to secure your account.\n\nIf you have any questions, contact us at info@collabiora.com.\nCollabiora, Los Angeles, CA\n\n© ${new Date().getFullYear()} Collabiora. All rights reserved.`,
       }),
     });
 
