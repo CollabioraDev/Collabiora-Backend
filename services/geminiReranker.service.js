@@ -40,14 +40,24 @@ function truncate(str, max) {
  * @param {Object} [opts] - { maxDocs: number, maxDocChars: number }
  * @returns {Promise<Array>} Same publications in reranked order
  */
-export async function rerankPublicationsWithGemini(query, publications, opts = {}) {
+export async function rerankPublicationsWithGemini(
+  query,
+  publications,
+  opts = {},
+) {
   const enabled = process.env.PUBLICATION_GEMINI_RERANK_ENABLED === "true";
   if (!enabled || !query || !publications?.length) {
     return publications || [];
   }
 
-  const maxDocs = opts.maxDocs ?? parseInt(process.env.PUBLICATION_GEMINI_RERANK_MAX_DOCS, 10) ?? DEFAULT_MAX_DOCS;
-  const maxDocChars = opts.maxDocChars ?? parseInt(process.env.PUBLICATION_GEMINI_RERANK_MAX_CHARS, 10) ?? DEFAULT_MAX_CHARS_PER_DOC;
+  const maxDocs =
+    opts.maxDocs ??
+    parseInt(process.env.PUBLICATION_GEMINI_RERANK_MAX_DOCS, 10) ??
+    DEFAULT_MAX_DOCS;
+  const maxDocChars =
+    opts.maxDocChars ??
+    parseInt(process.env.PUBLICATION_GEMINI_RERANK_MAX_CHARS, 10) ??
+    DEFAULT_MAX_CHARS_PER_DOC;
 
   const slice = publications.slice(0, maxDocs);
   const rest = publications.slice(maxDocs);
@@ -61,7 +71,9 @@ export async function rerankPublicationsWithGemini(query, publications, opts = {
   const geminiInstance = getGeminiInstance();
   if (!geminiInstance) return publications;
 
-  const model = geminiInstance.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+  const model = geminiInstance.getGenerativeModel({
+    model: "gemini-2.5-flash-lite",
+  });
 
   const prompt = `You are a search relevance expert. Given the user's query and a list of research paper titles (and short snippets), output the numbers of the papers in order of relevance to the query. Most relevant first.
 

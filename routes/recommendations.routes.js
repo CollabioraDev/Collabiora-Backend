@@ -2,7 +2,7 @@ import { Router } from "express";
 import { Profile } from "../models/Profile.js";
 import { User } from "../models/User.js";
 import { searchClinicalTrials } from "../services/clinicalTrials.service.js";
-import { searchPubMed } from "../services/pubmed.service.js";
+import { searchPublicationsBatch } from "../services/publicationSearch.service.js";
 import { findDeterministicExperts } from "../services/deterministicExperts.service.js";
 import {
   calculateTrialMatch,
@@ -193,25 +193,26 @@ router.get("/recommendations/:userId", async (req, res) => {
           console.error("Error fetching clinical trials:", error);
           return { items: [], totalCount: 0, hasMore: false };
         }),
-        // Dashboard: publications from last 3 months only (mindate so only specified timeline)
-        searchPubMed({
+        // Dashboard: publications from last 3 months only.
+        // Use the same combined publications pipeline as /api/search/publications
+        // (PubMed + OpenAlex + optional extra sources) so ranking is consistent
+        // with the Publications page. We still keep the dashboard's profile‑based
+        // query and 3‑month recency window.
+        searchPublicationsBatch({
           q: pubmedQuery,
           mindate: pubMindate,
           maxdate: "",
-          page: 1,
-          pageSize: 50,
-        }).catch(
-          (error) => {
-            console.error("Error fetching PubMed publications:", error);
-            return {
-              items: [],
-              totalCount: 0,
-              page: 1,
-              pageSize: 50,
-              hasMore: false,
-            };
-          },
-        ),
+          sort: "relevance",
+          batchSize: 300,
+        }).catch((error) => {
+          console.error("Error fetching dashboard publications:", error);
+          return {
+            items: [],
+            totalCount: 0,
+            sourcesUsed: [],
+            sourceCounts: {},
+          };
+        }),
         // Fetch global experts using deterministic approach (dashboard: limit OpenAlex to top 100 for speed + skip AI summaries)
         findDeterministicExperts(
           primaryTopic, // Use primary topic (first interest)
@@ -330,8 +331,22 @@ router.get("/recommendations/:userId", async (req, res) => {
       }
     }
 
+    // For publications, use the same matching behavior as the /api/search/publications
+    // route by setting rawSearchQuery on the profile before calculating matches.
+    let profileForPublications = profile;
+    if (!profileForPublications) {
+      profileForPublications = { patient: {} };
+    }
+    if (!profileForPublications.patient) {
+      profileForPublications.patient = {};
+    }
+    // Use the combined profile-based query as the "raw search query" so
+    // calculatePublicationMatch can apply its query-aware logic consistently
+    // with the Publications page.
+    profileForPublications.patient.rawSearchQuery = pubmedQuery;
+
     const publicationsWithMatch = publications.map((pub) => {
-      const match = calculatePublicationMatch(pub, profile);
+      const match = calculatePublicationMatch(pub, profileForPublications);
       return {
         ...pub,
         matchPercentage: match.matchPercentage,
@@ -573,27 +588,38 @@ router.get("/recommendations/:userId/section", async (req, res) => {
     }
 
     if (type === "publications") {
-      const publicationsResult = await searchPubMed({
+      const publicationsResult = await searchPublicationsBatch({
         q: combinedQuery,
         mindate: pubMindate,
         maxdate: "",
-        page: 1,
-        pageSize: 50,
+        sort: "relevance",
+        batchSize: 300,
       }).catch((err) => {
         console.error("Error fetching publications section:", err);
         return {
           items: [],
           totalCount: 0,
-          page: 1,
-          pageSize: 50,
-          hasMore: false,
+          sourcesUsed: [],
+          sourceCounts: {},
         };
       });
       const publications = (publicationsResult?.items || []).filter(
         (pub) => pub.abstract && pub.abstract.trim().length > 0,
       );
+
+      // Mirror /api/search/publications behavior by setting rawSearchQuery
+      // so calculatePublicationMatch can incorporate query signals.
+      let profileForPublications = profile;
+      if (!profileForPublications) {
+        profileForPublications = { patient: {} };
+      }
+      if (!profileForPublications.patient) {
+        profileForPublications.patient = {};
+      }
+      profileForPublications.patient.rawSearchQuery = combinedQuery;
+
       const publicationsWithMatch = publications.map((pub) => {
-        const match = calculatePublicationMatch(pub, profile);
+        const match = calculatePublicationMatch(pub, profileForPublications);
         return {
           ...pub,
           matchPercentage: match.matchPercentage,

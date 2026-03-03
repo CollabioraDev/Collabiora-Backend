@@ -113,4 +113,3 @@ ${sourceText}`;
     return { keyPoints: null, error: msg };
   }
 }
-
