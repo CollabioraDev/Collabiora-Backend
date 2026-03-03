@@ -193,17 +193,16 @@ router.get("/recommendations/:userId", async (req, res) => {
           console.error("Error fetching clinical trials:", error);
           return { items: [], totalCount: 0, hasMore: false };
         }),
-        // Dashboard: publications from last 3 months only.
-        // Use the same combined publications pipeline as /api/search/publications
-        // (PubMed + OpenAlex + optional extra sources) so ranking is consistent
-        // with the Publications page. We still keep the dashboard's profile‑based
-        // query and 3‑month recency window.
+        // Dashboard: publications from last 3 months only, PubMed backend only.
+        // Use pubmedOnly so every result has a PMID and "view full paper" uses the same
+        // fast PubMed backend without slow OpenAlex/Semantic Scholar/arXiv fetches (avoids lag).
         searchPublicationsBatch({
           q: pubmedQuery,
           mindate: pubMindate,
           maxdate: "",
           sort: "relevance",
           batchSize: 300,
+          pubmedOnly: true,
         }).catch((error) => {
           console.error("Error fetching dashboard publications:", error);
           return {
@@ -594,6 +593,7 @@ router.get("/recommendations/:userId/section", async (req, res) => {
         maxdate: "",
         sort: "relevance",
         batchSize: 300,
+        pubmedOnly: true,
       }).catch((err) => {
         console.error("Error fetching publications section:", err);
         return {

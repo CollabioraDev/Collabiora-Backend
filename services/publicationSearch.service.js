@@ -162,8 +162,10 @@ function plainQuery(q) {
 /**
  * Combined search that returns a single large batch (no pagination), for use by the search route.
  * Sources: PubMed, OpenAlex, Semantic Scholar, Crossref, arXiv (optional via env).
+ * When pubmedOnly is true (e.g. for dashboard), only PubMed is queried so every result has a PMID
+ * and "view full paper" uses the same fast PubMed backend without slow external providers.
  *
- * @param {Object} opts - q, mindate, maxdate, sort, skipParsing, batchSize
+ * @param {Object} opts - q, mindate, maxdate, sort, skipParsing, batchSize, pubmedOnly
  * @returns {Promise<{ items: Array, totalCount: number, sourcesUsed: string[], sourceCounts: Object }>}
  */
 export async function searchPublicationsBatch({
@@ -173,7 +175,33 @@ export async function searchPublicationsBatch({
   sort = "relevance",
   skipParsing = false,
   batchSize = 300,
+  pubmedOnly = false,
 } = {}) {
+  // Dashboard / recommendations: use PubMed only so all items have pmid and view-full-paper is fast
+  if (pubmedOnly) {
+    const size = Math.max(1, Math.min(Number(batchSize) || 300, 500));
+    const pubmedResult = await searchPubMed({
+      q,
+      mindate,
+      maxdate,
+      page: 1,
+      pageSize: size,
+      sort,
+      skipParsing,
+    });
+    const items = (pubmedResult?.items || []).map((p) => ({
+      ...p,
+      id: p.pmid || p.id || "",
+      source: "pubmed",
+    }));
+    return {
+      items,
+      totalCount: pubmedResult?.totalCount ?? items.length,
+      sourcesUsed: items.length ? ["pubmed"] : [],
+      sourceCounts: { pubmed: items.length, openalex: 0, semantic_scholar: 0, arxiv: 0 },
+    };
+  }
+
   const plain = plainQuery(q);
   const useExtraSources =
     process.env.SEMANTIC_SCHOLAR_ENABLED !== "false" &&
