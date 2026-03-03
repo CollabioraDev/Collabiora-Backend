@@ -31,6 +31,7 @@ import orcidRoutes from "./routes/orcid.routes.js";
 import workSubmissionsRoutes from "./routes/work-submissions.routes.js";
 import pageFeedbackRoutes from "./routes/pageFeedback.routes.js";
 import feedbackRoutes from "./routes/feedback.routes.js";
+import newsRoutes from "./routes/news.routes.js";
 import { optionalSession } from "./middleware/auth.js";
 import { searchLimitMiddleware } from "./middleware/searchLimit.js";
 
@@ -104,6 +105,7 @@ app.use("/api", uploadRoutes);
 app.use("/api", feedbackRoutes);
 app.use("/api", contactRoutes);
 app.use("/api", workSubmissionsRoutes);
+app.use("/api", newsRoutes);
 app.use("/api/rate-limit", rateLimitRoutes); // Rate limiter monitoring
 
 const PORT = process.env.PORT || 5000;
