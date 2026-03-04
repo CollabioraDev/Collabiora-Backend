@@ -104,6 +104,87 @@ function getSourceScore(domain) {
   return 10; // default commercial
 }
 
+// ─── Domains to exclude (entertainment, sports, celebrity, etc.) ───────────
+const EXCLUDE_DOMAINS = [
+  "tmz.com",
+  "eonline.com",
+  "people.com",
+  "usmagazine.com",
+  "justjared.com",
+  "dailymail.co.uk",
+  "mirror.co.uk",
+  "thesun.co.uk",
+  "pagesix.com",
+  "entertainmentweekly.com",
+  "ew.com",
+  "variety.com",
+  "hollywoodreporter.com",
+  "deadline.com",
+  "billboard.com",
+  "mtv.com",
+  "rollingstone.com",
+  "espn.com",
+  "bleacherreport.com",
+  "cbssports.com",
+  "sports.yahoo.com",
+  "si.com",
+  "nba.com",
+  "nfl.com",
+  "mlb.com",
+  "eurosport.com",
+  "goal.com",
+  "gossipcop.com",
+  "celebuzz.com",
+  "radaronline.com",
+  "lifeandstylemag.com",
+  "okmagazine.com",
+  "intouchweekly.com",
+  "closerweekly.com",
+  "distractify.com",
+  "elitedaily.com",
+  "buzzfeed.com",
+  "buzzfeednews.com",
+  "ladbible.com",
+  "unilad.com",
+  "vice.com",
+  "refinery29.com",
+  "popsugar.com",
+  "bustle.com",
+  "cosmopolitan.com",
+  "elle.com",
+  "vogue.com",
+  "huffpost.com",
+  "huffingtonpost.com",
+];
+
+// Health/medical context added to every query so results stay on-topic
+const HEALTH_QUERY_SUFFIX =
+  " (health OR medical OR research OR treatment OR clinical OR medicine OR healthcare OR disease OR patient)";
+
+// Returns true if the article should be shown (health/research only)
+function isHealthRelated(article) {
+  let domain = "";
+  try {
+    domain = new URL(article.url || "").hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return false;
+  }
+  for (const excluded of EXCLUDE_DOMAINS) {
+    if (domain === excluded || domain.endsWith("." + excluded)) return false;
+  }
+  // If from a known health source, keep it
+  if (SOURCE_SCORES[domain] || Object.keys(SOURCE_SCORES).some((h) => domain.includes(h)))
+    return true;
+  // Otherwise require health-related wording in title or description
+  const text = `${article.title || ""} ${article.description || ""}`.toLowerCase();
+  const healthTerms = [
+    "health", "medical", "medicine", "research", "treatment", "clinical", "patient",
+    "disease", "therapy", "drug", "diagnosis", "symptom", "study", "hospital",
+    "doctor", "physician", "cancer", "heart", "brain", "vaccine", "fda", "trial",
+  ];
+  return healthTerms.some((term) => text.includes(term));
+}
+
 // ─── Disease → search keyword map ──────────────────────────────────────────
 const DISEASE_KEYWORDS = {
   // Neurology
@@ -174,31 +255,31 @@ const DISEASE_KEYWORDS = {
 };
 
 function buildSearchQuery(conditions = []) {
+  let baseQuery;
   if (!conditions || conditions.length === 0) {
-    return "health medical research treatment breakthrough";
-  }
-
-  const keywords = new Set();
-  for (const cond of conditions) {
-    const lower = (cond || "").toLowerCase().trim();
-    // Direct match
-    if (DISEASE_KEYWORDS[lower]) {
-      keywords.add(DISEASE_KEYWORDS[lower]);
-      continue;
-    }
-    // Partial match
-    let matched = false;
-    for (const [key, kw] of Object.entries(DISEASE_KEYWORDS)) {
-      if (lower.includes(key) || key.includes(lower)) {
-        keywords.add(kw);
-        matched = true;
-        break;
+    baseQuery = "health medical research treatment breakthrough";
+  } else {
+    const keywords = new Set();
+    for (const cond of conditions) {
+      const lower = (cond || "").toLowerCase().trim();
+      if (DISEASE_KEYWORDS[lower]) {
+        keywords.add(DISEASE_KEYWORDS[lower]);
+        continue;
       }
+      let matched = false;
+      for (const [key, kw] of Object.entries(DISEASE_KEYWORDS)) {
+        if (lower.includes(key) || key.includes(lower)) {
+          keywords.add(kw);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) keywords.add(cond);
     }
-    if (!matched) keywords.add(cond); // fallback to raw condition name
+    baseQuery = [...keywords].slice(0, 3).join(" OR ");
   }
-
-  return [...keywords].slice(0, 3).join(" OR ");
+  // Always scope to health/medical/research so we don't get entertainment or off-topic hits
+  return baseQuery + HEALTH_QUERY_SUFFIX;
 }
 
 // ─── Scoring ────────────────────────────────────────────────────────────────
@@ -299,26 +380,30 @@ router.get("/news", async (req, res) => {
     }
 
     const query = buildSearchQuery(conditions);
+    const excludeDomainsStr = EXCLUDE_DOMAINS.slice(0, 50).join(",");
 
-    // Fetch from NewsAPI
+    // Fetch from NewsAPI — exclude entertainment/sports domains, health-scoped query
     const newsRes = await axios.get("https://newsapi.org/v2/everything", {
       params: {
         q: query,
         language: "en",
         sortBy: "publishedAt",
-        pageSize: 30, // fetch more, then filter & sort
+        pageSize: 50, // fetch more, then filter to health-only and sort
+        excludeDomains: excludeDomainsStr,
         apiKey: newsApiKey,
       },
       timeout: 10000,
     });
 
-    let articles = (newsRes.data?.articles || []).filter(
-      (a) =>
-        a.title &&
-        a.url &&
-        a.title !== "[Removed]" &&
-        a.url !== "https://removed.com",
-    );
+    let articles = (newsRes.data?.articles || [])
+      .filter(
+        (a) =>
+          a.title &&
+          a.url &&
+          a.title !== "[Removed]" &&
+          a.url !== "https://removed.com",
+      )
+      .filter(isHealthRelated);
 
     // Score & sort
     articles = articles
@@ -585,27 +670,31 @@ router.get("/news/search", async (req, res) => {
       return res.status(503).json({ error: "News API key not configured", articles: [] });
     }
 
-    // Append "health" context to keep results health-related
-    const query = `${q} health`;
+    // Scope to health/medical/research so results match platform (no entertainment)
+    const query = `(${q})${HEALTH_QUERY_SUFFIX}`;
+    const excludeDomainsStr = EXCLUDE_DOMAINS.slice(0, 50).join(",");
 
     const newsRes = await axios.get("https://newsapi.org/v2/everything", {
       params: {
         q: query,
         language: "en",
         sortBy: "relevancy",
-        pageSize: 30,
+        pageSize: 50,
+        excludeDomains: excludeDomainsStr,
         apiKey: newsApiKey,
       },
       timeout: 10000,
     });
 
-    let articles = (newsRes.data?.articles || []).filter(
-      (a) =>
-        a.title &&
-        a.url &&
-        a.title !== "[Removed]" &&
-        a.url !== "https://removed.com",
-    );
+    let articles = (newsRes.data?.articles || [])
+      .filter(
+        (a) =>
+          a.title &&
+          a.url &&
+          a.title !== "[Removed]" &&
+          a.url !== "https://removed.com",
+      )
+      .filter(isHealthRelated);
 
     // Score & sort by credibility
     articles = articles
