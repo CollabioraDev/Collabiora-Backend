@@ -54,6 +54,233 @@ function setCache(key, value) {
 }
 
 /**
+ * Pre-baked search constraints for the 30+ most common medical topics.
+ * When a query matches one of these (case-insensitive token match), Gemini Step 1
+ * is completely skipped — saving ~1-3s and one API call per cold-cache search.
+ * Gemini still handles any topic not covered by this table.
+ */
+const PREBAKED_CONSTRAINTS = {
+  "diabetes": {
+    primaryKeywords: ["diabetes", "insulin", "glucose"],
+    subfields: ["endocrinology", "metabolic syndrome", "type 2 diabetes", "type 1 diabetes"],
+    meshTerms: ["Diabetes Mellitus", "Insulin Resistance", "Blood Glucose"],
+    synonyms: ["diabetic", "DM", "T2DM", "T1DM"],
+    relatedConcepts: ["obesity", "pancreas", "HbA1c"],
+    exclude: ["animal", "pediatric"],
+  },
+  "cancer": {
+    primaryKeywords: ["cancer", "oncology", "tumor"],
+    subfields: ["oncology", "immunotherapy", "chemotherapy", "radiotherapy"],
+    meshTerms: ["Neoplasms", "Carcinoma", "Tumor Microenvironment"],
+    synonyms: ["malignancy", "carcinoma", "neoplasm"],
+    relatedConcepts: ["immunology", "targeted therapy", "biomarkers"],
+    exclude: ["animal", "in vitro only"],
+  },
+  "alzheimer": {
+    primaryKeywords: ["Alzheimer", "dementia", "amyloid"],
+    subfields: ["neurodegenerative disease", "cognitive decline", "neuroinflammation"],
+    meshTerms: ["Alzheimer Disease", "Amyloid beta-Peptides", "Tau Proteins"],
+    synonyms: ["Alzheimer's disease", "AD", "senile dementia"],
+    relatedConcepts: ["memory loss", "aging", "neuropathology"],
+    exclude: ["animal", "pediatric"],
+  },
+  "parkinson": {
+    primaryKeywords: ["Parkinson", "dopamine", "neurodegeneration"],
+    subfields: ["movement disorders", "deep brain stimulation", "neuroinflammation"],
+    meshTerms: ["Parkinson Disease", "Dopaminergic Neurons", "Alpha-Synuclein"],
+    synonyms: ["Parkinson's disease", "PD", "parkinsonism"],
+    relatedConcepts: ["tremor", "basal ganglia", "lewy body"],
+    exclude: ["animal"],
+  },
+  "hypertension": {
+    primaryKeywords: ["hypertension", "blood pressure", "cardiovascular"],
+    subfields: ["cardiology", "antihypertensive", "renal hypertension"],
+    meshTerms: ["Hypertension", "Blood Pressure", "Antihypertensive Agents"],
+    synonyms: ["high blood pressure", "arterial hypertension", "HTN"],
+    relatedConcepts: ["stroke", "kidney disease", "heart failure"],
+    exclude: ["animal", "pediatric"],
+  },
+  "heart disease": {
+    primaryKeywords: ["heart disease", "coronary", "cardiac"],
+    subfields: ["cardiology", "myocardial infarction", "heart failure", "arrhythmia"],
+    meshTerms: ["Coronary Artery Disease", "Heart Failure", "Myocardial Infarction"],
+    synonyms: ["cardiovascular disease", "CAD", "CHD", "CVD"],
+    relatedConcepts: ["atherosclerosis", "cholesterol", "stents"],
+    exclude: ["animal"],
+  },
+  "asthma": {
+    primaryKeywords: ["asthma", "airway", "bronchial"],
+    subfields: ["pulmonology", "allergic asthma", "bronchospasm"],
+    meshTerms: ["Asthma", "Bronchial Hyperreactivity", "Airway Remodeling"],
+    synonyms: ["bronchial asthma", "reactive airway disease"],
+    relatedConcepts: ["allergy", "eosinophils", "inhaler"],
+    exclude: ["animal"],
+  },
+  "depression": {
+    primaryKeywords: ["depression", "antidepressant", "mental health"],
+    subfields: ["psychiatry", "major depressive disorder", "neuroscience"],
+    meshTerms: ["Depressive Disorder", "Antidepressive Agents", "Mental Health"],
+    synonyms: ["MDD", "major depression", "clinical depression"],
+    relatedConcepts: ["anxiety", "serotonin", "cognitive behavioral therapy"],
+    exclude: ["animal"],
+  },
+  "anxiety": {
+    primaryKeywords: ["anxiety", "anxiety disorder", "mental health"],
+    subfields: ["psychiatry", "generalized anxiety", "behavioral therapy"],
+    meshTerms: ["Anxiety Disorders", "Anxiolytics", "Mental Health"],
+    synonyms: ["GAD", "generalized anxiety disorder", "panic disorder"],
+    relatedConcepts: ["stress", "PTSD", "cognitive therapy"],
+    exclude: ["animal"],
+  },
+  "arthritis": {
+    primaryKeywords: ["arthritis", "joint", "inflammation"],
+    subfields: ["rheumatology", "osteoarthritis", "rheumatoid arthritis"],
+    meshTerms: ["Arthritis", "Rheumatoid Arthritis", "Osteoarthritis"],
+    synonyms: ["RA", "OA", "rheumatoid", "joint disease"],
+    relatedConcepts: ["autoimmune", "inflammation", "cartilage"],
+    exclude: ["animal"],
+  },
+  "multiple sclerosis": {
+    primaryKeywords: ["multiple sclerosis", "demyelination", "autoimmune"],
+    subfields: ["neurology", "neuroimmunology", "myelin"],
+    meshTerms: ["Multiple Sclerosis", "Demyelinating Diseases", "Myelin Sheath"],
+    synonyms: ["MS", "relapsing-remitting MS", "RRMS"],
+    relatedConcepts: ["T cells", "neuroinflammation", "brain lesions"],
+    exclude: ["animal"],
+  },
+  "obesity": {
+    primaryKeywords: ["obesity", "body weight", "metabolic"],
+    subfields: ["endocrinology", "bariatric surgery", "metabolic syndrome"],
+    meshTerms: ["Obesity", "Body Mass Index", "Adipose Tissue"],
+    synonyms: ["overweight", "BMI", "adiposity"],
+    relatedConcepts: ["insulin resistance", "diet", "exercise"],
+    exclude: ["animal"],
+  },
+  "stroke": {
+    primaryKeywords: ["stroke", "cerebrovascular", "ischemia"],
+    subfields: ["neurology", "thrombolysis", "cerebral infarction"],
+    meshTerms: ["Stroke", "Ischemic Stroke", "Cerebrovascular Disorders"],
+    synonyms: ["CVA", "brain attack", "TIA"],
+    relatedConcepts: ["clot", "blood flow", "rehabilitation"],
+    exclude: ["animal"],
+  },
+  "epilepsy": {
+    primaryKeywords: ["epilepsy", "seizure", "antiepileptic"],
+    subfields: ["neurology", "EEG", "brain stimulation"],
+    meshTerms: ["Epilepsy", "Seizures", "Anticonvulsants"],
+    synonyms: ["seizure disorder", "convulsions"],
+    relatedConcepts: ["ketogenic diet", "vagus nerve", "SUDEP"],
+    exclude: ["animal"],
+  },
+  "covid": {
+    primaryKeywords: ["COVID-19", "SARS-CoV-2", "coronavirus"],
+    subfields: ["infectious disease", "pulmonology", "immunology"],
+    meshTerms: ["COVID-19", "SARS-CoV-2", "Coronavirus Infections"],
+    synonyms: ["covid", "COVID19", "long COVID", "pandemic"],
+    relatedConcepts: ["vaccine", "cytokine storm", "ventilation"],
+    exclude: ["animal"],
+  },
+  "breast cancer": {
+    primaryKeywords: ["breast cancer", "mammary", "BRCA"],
+    subfields: ["oncology", "hormone receptor", "immunotherapy"],
+    meshTerms: ["Breast Neoplasms", "BRCA1", "Hormone Receptor Positive"],
+    synonyms: ["breast carcinoma", "TNBC", "HER2"],
+    relatedConcepts: ["chemotherapy", "mastectomy", "tamoxifen"],
+    exclude: ["animal"],
+  },
+  "lung cancer": {
+    primaryKeywords: ["lung cancer", "pulmonary", "NSCLC"],
+    subfields: ["oncology", "immunotherapy", "thoracic surgery"],
+    meshTerms: ["Lung Neoplasms", "Carcinoma Non-Small-Cell Lung", "Small Cell Lung Carcinoma"],
+    synonyms: ["NSCLC", "SCLC", "pulmonary carcinoma"],
+    relatedConcepts: ["EGFR", "immunotherapy", "smoking"],
+    exclude: ["animal"],
+  },
+  "colon cancer": {
+    primaryKeywords: ["colorectal cancer", "colon", "bowel"],
+    subfields: ["oncology", "gastroenterology", "gastrointestinal"],
+    meshTerms: ["Colorectal Neoplasms", "Colon Cancer", "Rectal Cancer"],
+    synonyms: ["colorectal", "CRC", "bowel cancer"],
+    relatedConcepts: ["colonoscopy", "KRAS", "immunotherapy"],
+    exclude: ["animal"],
+  },
+  "hiv": {
+    primaryKeywords: ["HIV", "AIDS", "antiretroviral"],
+    subfields: ["infectious disease", "immunology", "virology"],
+    meshTerms: ["HIV Infections", "Acquired Immunodeficiency Syndrome", "Antiretroviral Therapy"],
+    synonyms: ["human immunodeficiency virus", "AIDS", "ART"],
+    relatedConcepts: ["CD4", "viral load", "PrEP"],
+    exclude: ["animal"],
+  },
+  "schizophrenia": {
+    primaryKeywords: ["schizophrenia", "antipsychotic", "psychosis"],
+    subfields: ["psychiatry", "neuroscience", "psychopharmacology"],
+    meshTerms: ["Schizophrenia", "Antipsychotic Agents", "Psychotic Disorders"],
+    synonyms: ["schizophrenic", "psychosis", "schizoaffective"],
+    relatedConcepts: ["dopamine", "cognitive function", "hallucinations"],
+    exclude: ["animal"],
+  },
+  "adhd": {
+    primaryKeywords: ["ADHD", "attention deficit", "stimulant"],
+    subfields: ["psychiatry", "pediatric neurology", "behavioral health"],
+    meshTerms: ["Attention Deficit Disorder with Hyperactivity", "Methylphenidate", "Neurodevelopmental Disorders"],
+    synonyms: ["attention deficit hyperactivity disorder", "ADD"],
+    relatedConcepts: ["executive function", "methylphenidate", "amphetamine"],
+    exclude: [],
+  },
+  "autism": {
+    primaryKeywords: ["autism", "ASD", "neurodevelopmental"],
+    subfields: ["psychiatry", "neurodevelopment", "behavioral therapy"],
+    meshTerms: ["Autism Spectrum Disorder", "Autistic Disorder", "Neurodevelopmental Disorders"],
+    synonyms: ["autism spectrum disorder", "Asperger"],
+    relatedConcepts: ["social skills", "applied behavior analysis", "sensory"],
+    exclude: [],
+  },
+  "kidney disease": {
+    primaryKeywords: ["kidney disease", "renal", "nephrology"],
+    subfields: ["nephrology", "dialysis", "kidney transplant"],
+    meshTerms: ["Kidney Diseases", "Renal Insufficiency", "Glomerulonephritis"],
+    synonyms: ["CKD", "chronic kidney disease", "renal failure"],
+    relatedConcepts: ["dialysis", "GFR", "proteinuria"],
+    exclude: ["animal"],
+  },
+  "liver disease": {
+    primaryKeywords: ["liver disease", "hepatic", "cirrhosis"],
+    subfields: ["hepatology", "gastroenterology", "liver transplant"],
+    meshTerms: ["Liver Diseases", "Cirrhosis", "Non-alcoholic Fatty Liver Disease"],
+    synonyms: ["NAFLD", "NASH", "hepatitis", "hepatic failure"],
+    relatedConcepts: ["fibrosis", "liver transplant", "hepatocellular carcinoma"],
+    exclude: ["animal"],
+  },
+  "inflammatory bowel disease": {
+    primaryKeywords: ["inflammatory bowel disease", "IBD", "crohn"],
+    subfields: ["gastroenterology", "immunology", "biologics"],
+    meshTerms: ["Inflammatory Bowel Disease", "Crohn Disease", "Colitis Ulcerative"],
+    synonyms: ["IBD", "Crohn's disease", "ulcerative colitis", "UC"],
+    relatedConcepts: ["gut microbiome", "biologics", "endoscopy"],
+    exclude: ["animal"],
+  },
+};
+
+/**
+ * Find pre-baked constraints for a topic (fuzzy token match, case-insensitive).
+ * Returns null if no match found (Gemini will be used instead).
+ */
+function findPrebaked(topic) {
+  if (!topic) return null;
+  const lower = topic.toLowerCase().trim();
+  for (const [key, constraints] of Object.entries(PREBAKED_CONSTRAINTS)) {
+    // Exact substring match or all key tokens present in topic
+    if (lower.includes(key)) return constraints;
+    const keyTokens = key.split(" ");
+    if (keyTokens.length > 1 && keyTokens.every((t) => lower.includes(t))) {
+      return constraints;
+    }
+  }
+  return null;
+}
+
+/**
  * STEP 1: Use Gemini to generate search constraints ONLY (not expert names)
  * @param {string} topic - Topic like "Parkinson's Disease"
  * @param {string} location - Location like "Toronto, Canada"
@@ -63,6 +290,14 @@ async function generateSearchConstraints(topic, location) {
   const cacheKey = getCacheKey("constraints", topic, location || "global");
   const cached = getCache(cacheKey);
   if (cached) return cached;
+
+  // Fast path: if the topic matches a pre-baked entry, skip Gemini entirely (~1-3s saved)
+  const prebaked = findPrebaked(topic);
+  if (prebaked) {
+    console.log(`[Constraints] Pre-baked match for "${topic}" — skipping Gemini Step 1`);
+    setCache(cacheKey, prebaked);
+    return prebaked;
+  }
 
   const geminiInstance = getGeminiInstance();
   if (!geminiInstance) {
@@ -1133,20 +1368,15 @@ async function generateExpertSummaries(authors, skipAI = false) {
     model: "gemini-2.5-flash-lite",
   });
 
-  const authorsWithSummaries = [];
-
-  for (const author of authors) {
-    try {
-      // Generate 2-sentence bio based on verified data
-      const recentTitles = author.works
-        .slice(0, 5)
-        .map((w) => w.title)
-        .filter(Boolean);
-
-      const realPubs = getRealPubs(author);
-      const realCitations = getRealCitations(author);
-
-      const prompt = `
+  // Build all prompts up-front (pure CPU, instant)
+  const promptsData = authors.map((author) => {
+    const recentTitles = author.works
+      .slice(0, 5)
+      .map((w) => w.title)
+      .filter(Boolean);
+    const realPubs = getRealPubs(author);
+    const realCitations = getRealCitations(author);
+    const prompt = `
 Generate a 2-sentence professional biography for this researcher based ONLY on the provided data.
 
 Name: ${author.name}
@@ -1158,42 +1388,49 @@ ${recentTitles.map((t, i) => `${i + 1}. ${t}`).join("\n")}
 
 Output only the 2-sentence biography, no additional text. Use the exact publication and citation numbers provided.
 `;
+    return { author, prompt, realPubs, realCitations };
+  });
 
-      const result = await rateLimiter.execute(
-        async () => {
-          return await model.generateContent(prompt, {
-            generationConfig: {
-              maxOutputTokens: 200,
-              temperature: 0.4,
-            },
-          });
-        },
+  // Fire ALL bio requests simultaneously — total time ≈ slowest single call (~1-2s)
+  // instead of sum of all calls (~5-10s for 5 experts).
+  console.log(`Generating ${promptsData.length} expert bios in parallel...`);
+  const settled = await Promise.allSettled(
+    promptsData.map(({ prompt }) =>
+      rateLimiter.execute(
+        async () =>
+          model.generateContent(prompt, {
+            generationConfig: { maxOutputTokens: 200, temperature: 0.4 },
+          }),
         "gemini-2.5-flash-lite",
         400,
-      );
+      ),
+    ),
+  );
 
-      const biography = result.response.text().trim();
-
-      authorsWithSummaries.push({
-        ...author,
-        biography,
-      });
-    } catch (error) {
+  // Map results back to authors in order; fall back to template bio on any failure
+  return settled.map((result, i) => {
+    const { author, realPubs, realCitations } = promptsData[i];
+    if (result.status === "fulfilled") {
+      try {
+        const biography = result.value.response.text().trim();
+        return { ...author, biography };
+      } catch {
+        // response.text() threw
+      }
+    } else {
       console.error(
         `Error generating summary for ${author.name}:`,
-        error.message,
+        result.reason?.message,
       );
-      // Fallback bio
-      authorsWithSummaries.push({
-        ...author,
-        biography: `Researcher at ${
-          author.institutions[0] || "Unknown Institution"
-        } with ${getRealPubs(author)} publications and ${getRealCitations(author)} citations.`,
-      });
     }
-  }
-
-  return authorsWithSummaries;
+    // Fallback bio for any failure
+    return {
+      ...author,
+      biography: `Researcher at ${
+        author.institutions[0] || "Unknown Institution"
+      } with ${realPubs} publications and ${realCitations} citations.`,
+    };
+  });
 }
 
 /**
@@ -1240,54 +1477,60 @@ async function fetchOpenAlexAuthorProfiles(authors, limitProfiles = false) {
   if (authorIds.length === 0) return authors;
 
   const BATCH_SIZE = 50;
-  const allProfiles = [];
 
+  // Slice into batches
+  const batches = [];
   for (let i = 0; i < authorIds.length; i += BATCH_SIZE) {
-    const batchIds = authorIds.slice(i, i + BATCH_SIZE);
-    const cacheKey = getCacheKey("openalex-authors", batchIds.sort().join(","));
-    const cached = getCache(cacheKey);
-
-    let authorProfiles = cached;
-
-    if (!authorProfiles) {
-      try {
-        // Batch fetch using OpenAlex filter: openalex:A123|A456|A789
-        const filterValue = batchIds.join("|");
-        const url = "https://api.openalex.org/authors";
-        const params = {
-          filter: `openalex:${filterValue}`,
-          "per-page": batchIds.length,
-          select: "id,display_name,works_count,cited_by_count,summary_stats",
-          mailto: process.env.OPENALEX_MAILTO || "support@curalink.com",
-        };
-
-        console.log(
-          `Fetching real profiles for ${batchIds.length} authors from OpenAlex...`,
-        );
-
-        const response = await axios.get(url, {
-          params,
-          headers: {
-            "User-Agent":
-              "CuraLink/1.0 (expert discovery; mailto:support@curalink.com)",
-          },
-          timeout: 15000,
-        });
-
-        authorProfiles = response.data?.results || [];
-        setCache(cacheKey, authorProfiles);
-        console.log(`Got real profiles for ${authorProfiles.length} authors`);
-      } catch (error) {
-        console.error(
-          "Error fetching OpenAlex author profiles:",
-          error.message,
-        );
-        authorProfiles = [];
-      }
-    }
-
-    allProfiles.push(...authorProfiles);
+    batches.push(authorIds.slice(i, i + BATCH_SIZE));
   }
+
+  console.log(
+    `Fetching real profiles for ${authorIds.length} authors in ${batches.length} parallel batch(es)...`,
+  );
+
+  // Fire all batches simultaneously — total time ≈ slowest single batch (~1-3s)
+  // instead of sum of all batches (~2-12s for 2-4 batches).
+  const batchResults = await Promise.allSettled(
+    batches.map(async (batchIds) => {
+      const sortedIds = [...batchIds].sort();
+      const cacheKey = getCacheKey("openalex-authors", sortedIds.join(","));
+      const cached = getCache(cacheKey);
+      if (cached) return cached; // Cache hit: free, instant
+
+      const filterValue = batchIds.join("|");
+      const url = "https://api.openalex.org/authors";
+      const params = {
+        filter: `openalex:${filterValue}`,
+        "per-page": batchIds.length,
+        select: "id,display_name,works_count,cited_by_count,summary_stats",
+        mailto: process.env.OPENALEX_MAILTO || "support@curalink.com",
+      };
+
+      const response = await axios.get(url, {
+        params,
+        headers: {
+          "User-Agent":
+            "CuraLink/1.0 (expert discovery; mailto:support@curalink.com)",
+        },
+        timeout: 15000,
+      });
+
+      const profiles = response.data?.results || [];
+      setCache(cacheKey, profiles);
+      return profiles;
+    }),
+  );
+
+  // Flatten all successfully fetched profiles
+  const allProfiles = [];
+  for (const result of batchResults) {
+    if (result.status === "fulfilled") {
+      allProfiles.push(...(result.value || []));
+    } else {
+      console.error("Error fetching OpenAlex author profiles batch:", result.reason?.message);
+    }
+  }
+  console.log(`Got real profiles for ${allProfiles.length} authors`);
 
   // Create a lookup map by OpenAlex ID
   const profileMap = new Map();
@@ -1536,8 +1779,14 @@ export async function findDeterministicExperts(
   pageSize = 5,
   options = {},
 ) {
-  const { limitOpenAlexProfiles = false, skipAISummaries = false } = options;
+  const {
+    limitOpenAlexProfiles = false,
+    skipAISummaries = false,
+    useExpertPageScoring = false,
+  } = options;
   const forDashboard = limitOpenAlexProfiles || skipAISummaries;
+  // Use full (differentiated) scoring for ranking when requested, so dashboard match % isn't flat at 50%
+  const forRanking = useExpertPageScoring ? false : forDashboard;
 
   try {
     console.log(
@@ -1545,12 +1794,13 @@ export async function findDeterministicExperts(
     );
 
     // --- Cached pipeline: Steps 1-5 run once per query, results are reused for pagination ---
-    // Separate cache for dashboard (limited) vs Experts page (full) so both get correct results
+    // Separate cache by limit + scoring so dashboard can use differentiated scores without sharing cache with flat scoring
     const pipelineCacheKey = getCacheKey(
       "pipeline-ranked",
       topic,
       location || "global",
       limitOpenAlexProfiles ? "limit" : "full",
+      useExpertPageScoring ? "expertScore" : "dashboardScore",
     );
     let rankedAuthors = getCache(pipelineCacheKey);
 
@@ -1598,13 +1848,13 @@ export async function findDeterministicExperts(
         limitOpenAlexProfiles,
       );
 
-      // Step 5: Ranking (dashboard: last 1y 75% + last 2y 25% + citations; else upgraded formula)
+      // Step 5: Ranking (forRanking=true => flat dashboard formula; false => full formula for differentiated match %)
       console.log("Step 5: Ranking authors by metrics...");
       rankedAuthors = rankAuthorsByMetrics(
         authorCandidatesWithRealStats,
         location,
         topic,
-        forDashboard,
+        forRanking,
       );
       console.log(`Ranked ${rankedAuthors.length} authors`);
 
@@ -1792,8 +2042,37 @@ function buildHumanReadableLocation(expert) {
   return null;
 }
 
+/**
+ * Build a short match explanation from deterministic pipeline scores.
+ * Used so dashboard and Experts page show the same criteria (topic relevance, citations, recency, location).
+ */
+export function buildMatchExplanationFromScores(scores) {
+  if (!scores) return "General match";
+  const parts = [];
+  if ((scores.fieldRelevance ?? 0) >= 0.5) parts.push("topic relevance");
+  if ((scores.citations ?? 0) >= 0.3) parts.push("research impact");
+  if ((scores.recency ?? 0) >= 0.3) parts.push("recency");
+  if ((scores.location ?? 0) > 0) parts.push("location");
+  if ((scores.seniorAuthorship ?? 0) >= 0.4) parts.push("senior authorship");
+  return parts.length ? `Based on ${parts.join(", ")}` : "General match";
+}
+
+/**
+ * Derive match percentage (0–100) from deterministic pipeline final score (0–1).
+ * Clamped so display is in a reasonable range.
+ */
+export function matchPercentageFromScores(scores) {
+  if (scores?.final == null) return null;
+  const pct = Math.round(scores.final * 100);
+  return Math.min(99, Math.max(15, pct));
+}
+
 export function formatExpertsForResponse(experts) {
-  return experts.map((expert) => ({
+  return experts.map((expert) => {
+    const scores = expert.scores;
+    const matchPct = matchPercentageFromScores(scores);
+    const matchExplanation = buildMatchExplanationFromScores(scores);
+    return {
     name: expert.name,
     affiliation: expert.institutions[0] || null,
     // Full human-readable location: "City, Country" or just "Country"
@@ -1805,6 +2084,12 @@ export function formatExpertsForResponse(experts) {
     biography: expert.biography || null,
     orcid: expert.orcid || null,
     orcidUrl: expert.orcid ? `https://orcid.org/${expert.orcid}` : null,
+
+    // Match % from deterministic pipeline (same criteria as Experts page)
+    ...(matchPct != null && {
+      matchPercentage: matchPct,
+      matchExplanation,
+    }),
 
     // Metrics - use REAL counts from OpenAlex author profile (not search-result counts)
     metrics: {
@@ -1847,7 +2132,8 @@ export function formatExpertsForResponse(experts) {
         year: w.year,
         citations: w.citations,
       })),
-  }));
+  };
+  });
 }
 
 /**

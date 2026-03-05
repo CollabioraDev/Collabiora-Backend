@@ -70,6 +70,61 @@ import {
 
 const router = Router();
 
+// ---------------------------------------------------------------------------
+// Lightweight in-memory response caches for slow, external-API heavy searches
+// ---------------------------------------------------------------------------
+// These caches store final JSON response bodies keyed by query params and
+// basic auth context. They do NOT change response shape; they only make
+// repeated identical searches (including pagination) much faster.
+
+const RESPONSE_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const RESPONSE_CACHE_MAX_SIZE = 500;
+
+const trialsResponseCache = new Map();
+const publicationsResponseCache = new Map();
+const deterministicExpertsResponseCache = new Map();
+
+function makeResponseCacheKey(prefix, query, userContext = null) {
+  const sortedEntries = Object.entries(query || {}).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  const base = JSON.stringify(sortedEntries);
+  const userPart =
+    userContext && userContext.id
+      ? `|u:${String(userContext.id)}`
+      : userContext && userContext.isAuthenticated
+        ? "|u:auth"
+        : "|u:guest";
+  return `${prefix}:${base}${userPart}`;
+}
+
+function getCachedResponse(cache, key) {
+  const item = cache.get(key);
+  if (!item) return null;
+  if (Date.now() > item.expiresAt) {
+    cache.delete(key);
+    return null;
+  }
+  return item.payload;
+}
+
+function setCachedResponse(cache, key, payload) {
+  cache.set(key, {
+    payload,
+    expiresAt: Date.now() + RESPONSE_CACHE_TTL_MS,
+  });
+
+  // Best-effort cleanup to avoid unbounded growth
+  if (cache.size > RESPONSE_CACHE_MAX_SIZE) {
+    const now = Date.now();
+    for (const [k, v] of cache.entries()) {
+      if (now > v.expiresAt) {
+        cache.delete(k);
+      }
+    }
+  }
+}
+
 const PUBLICATION_STOP_WORDS = new Set([
   "the",
   "a",
@@ -735,6 +790,20 @@ router.get("/search/trials", async (req, res) => {
       sortByDate,
     } = req.query;
 
+    // Fast path: serve cached response when an identical search (including
+    // pagination) was executed recently by the same auth context.
+    const trialsCacheKey = makeResponseCacheKey(
+      "trials",
+      req.query,
+      req.user
+        ? { id: req.user._id || req.user.id || null, isAuthenticated: true }
+        : { isAuthenticated: false },
+    );
+    const cachedTrials = getCachedResponse(trialsResponseCache, trialsCacheKey);
+    if (cachedTrials) {
+      return res.json(cachedTrials);
+    }
+
     // Fetch profile first when userId is provided (needed for deriving q/location when empty and for matching)
     let userProfile = null;
     if (userId) {
@@ -963,12 +1032,16 @@ router.get("/search/trials", async (req, res) => {
     // Note: We're only showing results from the batch we fetched, so hasMore is based on batch size
     const hasMore = endIndex < sortedResults.length;
 
-    res.json({
+    const responseBody = {
       results: resultsWithReadStatus,
       totalCount: Math.min(result.totalCount || 0, sortedResults.length), // Use batch size as total count for pagination purposes
       hasMore: hasMore,
       ...(remaining !== null && { remaining }),
-    });
+    };
+
+    setCachedResponse(trialsResponseCache, trialsCacheKey, responseBody);
+
+    res.json(responseBody);
   } catch (error) {
     console.error("Error searching trials:", error);
     res.status(500).json({ error: "Failed to search trials", results: [] });
@@ -1050,6 +1123,22 @@ router.get("/search/publications", async (req, res) => {
       recentMonths,
       sortByDate,
     } = req.query;
+
+    // Fast path: return cached response for identical search params
+    const publicationsCacheKey = makeResponseCacheKey(
+      "publications",
+      req.query,
+      req.user
+        ? { id: req.user._id || req.user.id || null, isAuthenticated: true }
+        : { isAuthenticated: false },
+    );
+    const cachedPublications = getCachedResponse(
+      publicationsResponseCache,
+      publicationsCacheKey,
+    );
+    if (cachedPublications) {
+      return res.json(cachedPublications);
+    }
 
     // Log incoming search parameters for debugging
     console.log("Publications search params:", {
@@ -1230,13 +1319,17 @@ router.get("/search/publications", async (req, res) => {
     // This ensures results are sorted across all pages, not just within each page
     const requestedPage = parseInt(page, 10);
     const requestedPageSize = parseInt(pageSize, 10);
-    const baseBatchSize = 300;
 
     const isMultiConceptQuery =
       !!atmQueryMeta.isMultiConcept &&
       !atmQueryMeta.isPmcSearch &&
       !atmQueryMeta.isPmidSearch &&
       !atmQueryMeta.isExactTitleSearch;
+
+    // For page 1 of normal queries use a smaller batch (150) so PubMed/OpenAlex
+    // return less data → faster XML parse, smaller network payload.
+    // Multi-concept queries still need a larger pool so both concepts can intersect.
+    const baseBatchSize = requestedPage === 1 && !isMultiConceptQuery ? 150 : 300;
 
     // For multi-concept (e.g., disease + mold exposure) queries, increase retmax slightly.
     const multiConceptBatchSize = Math.min(1000, Math.max(600, baseBatchSize));
@@ -1588,18 +1681,24 @@ router.get("/search/publications", async (req, res) => {
             return hasAbstract;
           });
 
-    // Layer 2: Citation metrics enrichment (iCite)
+    // Layer 2: Citation metrics enrichment (iCite) — run in parallel with profile fetch
     const pmids = allResults
       .map((p) => String(p.pmid || p.id || ""))
       .filter(Boolean);
+
+    // Build user profile for matching — run in parallel with iCite call
+    let userProfile = null;
     let citationMap = new Map();
-    if (pmids.length > 0) {
-      try {
-        citationMap = await fetchCitationMetrics(pmids);
-      } catch (err) {
-        console.warn("Citation metrics fetch failed:", err.message);
-      }
+
+    const [citationMapResult] = await Promise.allSettled([
+      pmids.length > 0 ? fetchCitationMetrics(pmids) : Promise.resolve(new Map()),
+    ]);
+    if (citationMapResult.status === "fulfilled") {
+      citationMap = citationMapResult.value;
+    } else {
+      console.warn("Citation metrics fetch failed:", citationMapResult.reason?.message);
     }
+
     allResults = allResults.map((pub) => {
       const pid = String(pub.pmid || pub.id || "");
       const metrics = citationMap.get(pid) || {};
@@ -1610,8 +1709,6 @@ router.get("/search/publications", async (req, res) => {
       };
     });
 
-    // Build user profile for matching
-    let userProfile = null;
     if (userId) {
       // Fetch user profile from database
       const profile = await Profile.findOne({ userId }).lean();
@@ -2123,7 +2220,7 @@ router.get("/search/publications", async (req, res) => {
       searchKeywordsForFrontend || [],
     );
 
-    res.json({
+    const responseBody = {
       results: resultsWithReadStatus,
       totalCount: Math.min(pubmedResult.totalCount || 0, sortedResults.length), // Use batch size as total count for pagination purposes
       page: requestedPage,
@@ -2137,7 +2234,15 @@ router.get("/search/publications", async (req, res) => {
         publicationSources: publicationSourceMeta,
       }),
       ...(displayKeywords.length > 0 && { searchKeywords: displayKeywords }),
-    });
+    };
+
+    setCachedResponse(
+      publicationsResponseCache,
+      publicationsCacheKey,
+      responseBody,
+    );
+
+    res.json(responseBody);
   } catch (error) {
     console.error("Error searching publications:", error);
     res.status(500).json({
@@ -2649,6 +2754,25 @@ router.get("/search/experts/deterministic", async (req, res) => {
     }
 
     const searchQ = naturalLanguageToSearchKeywords(q.trim()) || q.trim();
+
+    // Cache deterministic expert responses by normalized topic/location/page
+    // and basic auth context. The underlying deterministic pipeline already
+    // has its own caching, but this avoids re-running pagination + formatting
+    // and search-limit checks for identical requests.
+    const deterministicCacheKey = makeResponseCacheKey(
+      "experts-deterministic",
+      { ...req.query, q: searchQ },
+      req.user
+        ? { id: req.user._id || req.user.id || null, isAuthenticated: true }
+        : { isAuthenticated: false },
+    );
+    const cachedExperts = getCachedResponse(
+      deterministicExpertsResponseCache,
+      deterministicCacheKey,
+    );
+    if (cachedExperts) {
+      return res.json(cachedExperts);
+    }
     const parsedPage = Math.max(1, parseInt(page, 10) || 1);
     const parsedPageSize = Math.max(
       1,
@@ -2681,7 +2805,7 @@ router.get("/search/experts/deterministic", async (req, res) => {
       remaining = limitCheck.remaining;
     }
 
-    return res.json({
+    const responseBody = {
       results: formattedExperts,
       totalFound,
       page: parsedPage,
@@ -2689,7 +2813,15 @@ router.get("/search/experts/deterministic", async (req, res) => {
       hasMore,
       method: "deterministic",
       ...(remaining !== null && { remaining }),
-    });
+    };
+
+    setCachedResponse(
+      deterministicExpertsResponseCache,
+      deterministicCacheKey,
+      responseBody,
+    );
+
+    return res.json(responseBody);
   } catch (error) {
     console.error("Error in deterministic expert search:", error);
     return res.status(500).json({

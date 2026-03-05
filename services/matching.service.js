@@ -673,7 +673,31 @@ export function calculatePublicationMatch(pub, userProfile) {
      --------------------------------------------------------- */
 export function calculateExpertMatch(expert, userProfile) {
   // Support both patient and researcher profiles
-  const userConditions = userProfile?.patient?.conditions || [];
+  const allPatientConditions = userProfile?.patient?.conditions || [];
+  let userConditions = allPatientConditions;
+
+  // If the user has explicitly selected primary conditions, only use those
+  // for matching instead of every condition on their profile.
+  const primaryConditionIndices =
+    userProfile?.patient?.primaryConditionIndices ||
+    userProfile?.patient?.primaryConditionsIndices; // backward/typo-safe
+  if (
+    Array.isArray(primaryConditionIndices) &&
+    primaryConditionIndices.length > 0 &&
+    allPatientConditions.length > 0
+  ) {
+    const selected = primaryConditionIndices
+      .filter(
+        (i) =>
+          Number.isInteger(i) && i >= 0 && i < allPatientConditions.length,
+      )
+      .map((i) => allPatientConditions[i])
+      .filter(Boolean);
+    if (selected.length > 0) {
+      userConditions = selected;
+    }
+  }
+
   const userKeywords = userProfile?.patient?.keywords || [];
   // For researchers, use interests/specialties as conditions/keywords
   const researcherInterests = userProfile?.researcher?.interests || userProfile?.researcher?.specialties || [];

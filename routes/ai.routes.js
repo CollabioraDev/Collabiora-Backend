@@ -7,6 +7,7 @@ import {
   simplifyTitle,
   generateTrialDetails,
   simplifyTrialSummary,
+  simplifyTrialForPatients,
   batchSimplifyPublicationTitles,
   simplifyPublicationForPatients,
 } from "../services/summary.service.js";
@@ -226,6 +227,23 @@ router.post("/ai/simplify-trial-summary", async (req, res) => {
   } catch (error) {
     console.error("Error simplifying trial summary:", error);
     res.status(500).json({ error: "Failed to simplify trial summary" });
+  }
+});
+
+// Plain-language trial summary for "Simplify further" (same pattern as simplify-publication)
+router.post("/ai/simplify-trial", async (req, res) => {
+  try {
+    const { trial } = req.body || {};
+
+    if (!trial) {
+      return res.status(400).json({ error: "trial is required" });
+    }
+
+    const summary = await simplifyTrialForPatients(trial);
+    res.json({ summary });
+  } catch (error) {
+    console.error("Error simplifying trial for patients:", error);
+    res.status(500).json({ error: "Failed to simplify trial" });
   }
 });
 

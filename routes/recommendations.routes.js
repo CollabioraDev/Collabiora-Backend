@@ -3,7 +3,11 @@ import { Profile } from "../models/Profile.js";
 import { User } from "../models/User.js";
 import { searchClinicalTrials } from "../services/clinicalTrials.service.js";
 import { searchPublicationsBatch } from "../services/publicationSearch.service.js";
-import { findDeterministicExperts } from "../services/deterministicExperts.service.js";
+import {
+  findDeterministicExperts,
+  matchPercentageFromScores,
+  buildMatchExplanationFromScores,
+} from "../services/deterministicExperts.service.js";
 import {
   calculateTrialMatch,
   calculatePublicationMatch,
@@ -221,6 +225,7 @@ router.get("/recommendations/:userId", async (req, res) => {
           {
             limitOpenAlexProfiles: true, // Dashboard only: fetch top 100 authors for faster load
             skipAISummaries: true, // Dashboard only: skip AI summary generation for much faster load
+            useExpertPageScoring: true, // Use full formula so match % is differentiated (not flat 50%)
           },
         ).catch((error) => {
           console.error("Error fetching global experts:", error);
@@ -397,7 +402,16 @@ router.get("/recommendations/:userId", async (req, res) => {
       };
     });
 
+    // Use same criteria as deterministicExperts.service.js and Experts page (pipeline score)
     const globalExpertsWithMatch = (globalExpertsList || []).map((expert) => {
+      const pct = matchPercentageFromScores(expert.scores);
+      if (pct != null) {
+        return {
+          ...expert,
+          matchPercentage: pct,
+          matchExplanation: buildMatchExplanationFromScores(expert.scores),
+        };
+      }
       const match = calculateExpertMatch(expert, profile);
       return {
         ...expert,
@@ -665,6 +679,7 @@ router.get("/recommendations/:userId/section", async (req, res) => {
         {
           limitOpenAlexProfiles: true,
           skipAISummaries: true,
+          useExpertPageScoring: true,
         },
       ).catch((err) => {
         console.error("Error fetching global experts section:", err);
@@ -717,7 +732,16 @@ router.get("/recommendations/:userId/section", async (req, res) => {
         matchExplanation: match.matchExplanation,
       };
     });
+    // Use same criteria as deterministic pipeline (topic relevance, citations, recency)
     const globalExpertsWithMatch = (globalExpertsList || []).map((expert) => {
+      const pct = matchPercentageFromScores(expert.scores);
+      if (pct != null) {
+        return {
+          ...expert,
+          matchPercentage: pct,
+          matchExplanation: buildMatchExplanationFromScores(expert.scores),
+        };
+      }
       const match = calculateExpertMatch(expert, profile);
       return {
         ...expert,

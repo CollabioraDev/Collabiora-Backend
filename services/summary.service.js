@@ -137,7 +137,54 @@ export async function summarizeText(text, type = "general", simplify = false) {
     if (type === "publication") {
       const publicationContent = text.substring(0, PUBLICATION_CONTENT_LIMIT);
 
-      const prompt = `You are Yori, a health research assistant. Summarize this publication in the same informative style as your chatbot on a publication-detail page. Use clear, accessible language but you may use appropriate technical terms (e.g. MRI, EEG, biomarkers, neuroimaging) and briefly explain them when helpful. Match the tone of a helpful research assistant—informative and precise, not oversimplified.
+      // First-level simplified summary for patients: same prompt level as simplifyPublicationForPatients
+      // so Publications, DashboardPatient, and any "Understand this Paper" get the same patient-friendly summary.
+      const patientPrompt = `You are Yori, a kind health research assistant.
+
+Your job is to explain this medical research publication to a patient or caregiver
+using very clear, plain language WHILE keeping the medical meaning and technical terms.
+
+Return a JSON object with EXACTLY these keys:
+{
+  "coreMessage": "...",
+  "what": "...",
+  "why": "...",
+  "how": "...",
+  "soWhat": "...",
+  "keyTakeaway": "..."
+}
+
+DETAILED RULES:
+- Keep the original medical meaning exactly the same
+- Do NOT invent new results, risks, or claims
+- Keep all important disease names, treatments, tests, and technical terms
+  (for example: "Parkinson's disease", "MRI", "immunotherapy", "biomarker")
+- When you use a technical term, briefly explain it in simple words in the same sentence
+  (for example: "biomarker (a blood or scan signal doctors measure)")
+- Do NOT rename or remove medical conditions or treatments
+- If something is uncertain in the study, say that it is uncertain
+
+STYLE:
+- Write for someone with a high-school reading level
+- Use short, clear sentences (about 10–18 words each)
+- Use friendly, direct language: "this study looked at", "this means", "for people with this condition"
+- Each field should be 2–4 sentences in plain language.
+
+FIELD MEANINGS:
+- "coreMessage": The single most important idea or finding, in 1–2 simple sentences.
+- "what": What the study is about and which condition or problem it focuses on.
+- "why": Why this study matters and who might care about it.
+- "how": How the study was done (tests, scans, medicines, type of study).
+- "soWhat": What the results could mean in real life, especially for patients.
+- "keyTakeaway": One short sentence that a patient should remember.
+
+Publication content:
+${publicationContent}
+
+Return ONLY valid JSON with those keys. No markdown, no extra text before or after.`;
+
+      // Researcher / technical first-level: informative and precise
+      const researcherPrompt = `You are Yori, a health research assistant. Summarize this publication in the same informative style as your chatbot on a publication-detail page. Use clear, accessible language but you may use appropriate technical terms (e.g. MRI, EEG, biomarkers, neuroimaging) and briefly explain them when helpful. Match the tone of a helpful research assistant—informative and precise, not oversimplified.
 
 Return a JSON object with exactly these keys. Each value should be 2–4 sentences (or short bullet points in plain text). Base everything on the publication content below. Do not invent facts.
 
@@ -154,6 +201,8 @@ Publication content:
 ${publicationContent}
 
 Return ONLY valid JSON. No markdown code fences, no extra text before or after.`;
+
+      const prompt = simplify ? patientPrompt : researcherPrompt;
 
       let result;
       try {
@@ -1293,6 +1342,138 @@ Return ONLY the explanation text, no markdown formatting, no labels, just the ex
         "Information about potential risks and benefits associated with this clinical trial is available on the ClinicalTrials.gov website. Please review this information carefully before deciding to participate.",
       participantRequirements:
         "Specific requirements and expectations for participants, including visits, tests, and follow-up procedures, are detailed on the ClinicalTrials.gov website.",
+    };
+  }
+}
+
+/**
+ * Plain-language trial summary for "Simplify further" (same pattern as simplifyPublicationForPatients).
+ * Uses a single dedicated prompt so the result is clearly in plain language for patients.
+ */
+export async function simplifyTrialForPatients(trial) {
+  if (!trial) {
+    return {
+      structured: true,
+      generalSummary: "",
+      procedures: "",
+      risksBenefits: "",
+      participantRequirements: "",
+    };
+  }
+
+  // Normalize trial shape (frontend may send different property names)
+  const description =
+    trial.description ||
+    trial.conditionDescription ||
+    "";
+  const eligibilityCriteria =
+    (typeof trial.eligibility === "string"
+      ? trial.eligibility
+      : trial.eligibility?.criteria) || "";
+  const conditions = Array.isArray(trial.conditions)
+    ? trial.conditions.join(", ")
+    : trial.conditions || "";
+
+  const trialContent = [
+    `Title: ${trial.title || "Clinical trial"}`,
+    trial.phase ? `Phase: ${trial.phase}` : "",
+    trial.status ? `Status: ${trial.status}` : "",
+    conditions ? `Conditions: ${conditions}` : "",
+    description ? `Description:\n${description}` : "",
+    eligibilityCriteria ? `Eligibility:\n${eligibilityCriteria}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const contentSlice = trialContent.slice(0, 8000);
+
+  if (!apiKey && !apiKey2) {
+    return {
+      structured: true,
+      generalSummary:
+        "This trial is about " +
+        (conditions || trial.title || "the condition listed") +
+        ". More details are on ClinicalTrials.gov.",
+      procedures: "Study procedures and visits are described on the trial’s ClinicalTrials.gov page.",
+      risksBenefits: "Risks and benefits are listed on the trial’s ClinicalTrials.gov page.",
+      participantRequirements: "What you need to do as a participant is described on ClinicalTrials.gov.",
+    };
+  }
+
+  try {
+    const geminiInstance = getGeminiInstance();
+    if (!geminiInstance) {
+      return {
+        structured: true,
+        generalSummary: "This trial is about " + (conditions || trial.title || "the condition") + ".",
+        procedures: "See ClinicalTrials.gov for procedures.",
+        risksBenefits: "See ClinicalTrials.gov for risks and benefits.",
+        participantRequirements: "See ClinicalTrials.gov for participant requirements.",
+      };
+    }
+
+    const model = geminiInstance.getGenerativeModel({
+      model: "gemini-2.5-flash-lite",
+    });
+
+    const prompt = `You are a kind health assistant explaining a clinical trial to a patient or caregiver.
+
+Your job is to explain this trial in very clear, plain language. Use everyday words and short sentences.
+
+Return a JSON object with EXACTLY these four keys (each value 2–4 short sentences in plain language):
+{
+  "generalSummary": "Brief overview: what this trial is about and who it's for. Use words like 'this trial looks at', 'you might be able to join if'.",
+  "procedures": "What happens during the trial: visits, tests, treatments. Use 'you will', 'the team will', 'medicine' not 'medication'.",
+  "risksBenefits": "Possible benefits and what to watch out for. Use 'might help', 'could have side effects'. Be clear but not scary.",
+  "participantRequirements": "What participants need to do: visits, tests, time. Use 'you'll need to', 'they'll check'."
+}
+
+RULES:
+- Write for a high-school reading level. Short sentences (about 10–18 words each).
+- Use friendly words: "you", "we", "the team", "medicine", "visit", "get" not "receive".
+- Explain any medical terms in simple words in the same sentence.
+- Do NOT invent details. If something isn't in the trial info, say so briefly.
+- Return ONLY valid JSON. No markdown, no code fences, no text before or after.
+
+Trial information:
+${contentSlice}
+
+Return ONLY the JSON object.`;
+
+    const result = await rateLimiter.execute(
+      async () => {
+        return await model.generateContent(prompt, {
+          generationConfig: {
+            maxOutputTokens: 800,
+            temperature: 0.4,
+          },
+        });
+      },
+      "gemini-2.5-flash-lite",
+      500 + contentSlice.length / 4 + 800,
+    );
+
+    let responseText = result.response.text().trim();
+    if (responseText.startsWith("```")) {
+      responseText = responseText.replace(/^```\w*\n?/, "").replace(/\n?```\s*$/, "").trim();
+    }
+    const parsed = JSON.parse(responseText);
+    return {
+      structured: true,
+      generalSummary: String(parsed.generalSummary || "").trim() || "This trial is described on ClinicalTrials.gov.",
+      procedures: String(parsed.procedures || "").trim() || "Procedures are listed on ClinicalTrials.gov.",
+      risksBenefits: String(parsed.risksBenefits || "").trim() || "Risks and benefits are on ClinicalTrials.gov.",
+      participantRequirements:
+        String(parsed.participantRequirements || "").trim() || "Requirements are on ClinicalTrials.gov.",
+    };
+  } catch (e) {
+    console.error("simplifyTrialForPatients error:", e);
+    return {
+      structured: true,
+      generalSummary: "We couldn't simplify this trial summary right now. Please try again.",
+      procedures: "",
+      risksBenefits: "",
+      participantRequirements: "",
     };
   }
 }
