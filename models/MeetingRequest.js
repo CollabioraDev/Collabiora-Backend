@@ -16,6 +16,7 @@ const meetingRequestSchema = new mongoose.Schema(
     respondedAt: { type: Date },
     meetingDate: { type: Date },
     meetingNotes: { type: String },
+    patientQuestions: { type: String }, // Optional questions from patient (e.g. after booking)
   },
   { timestamps: true }
 );

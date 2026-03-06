@@ -9,7 +9,7 @@ const router = Router();
 // Send a meeting request (patient to expert)
 router.post("/meeting-requests", async (req, res) => {
   try {
-    const { patientId, expertId, message, preferredDate, preferredTime } = req.body;
+    const { patientId, expertId, message, preferredDate, preferredTime, patientQuestions } = req.body;
 
     if (!patientId || !expertId || !message) {
       return res.status(400).json({ error: "Missing required fields" });
@@ -45,9 +45,10 @@ router.post("/meeting-requests", async (req, res) => {
       preferredDate: preferredDate ? new Date(preferredDate) : null,
       preferredTime: preferredTime || null,
       status: "pending",
+      patientQuestions: patientQuestions || null,
     });
 
-    // Create notification for expert
+    // Create notification for expert (with full details for activity)
     const patient = await User.findById(patientIdObj).lean();
     await Notification.create({
       userId: expertIdObj,
@@ -60,6 +61,10 @@ router.post("/meeting-requests", async (req, res) => {
       metadata: {
         patientUsername: patient?.username,
         requestId: meetingRequest._id.toString(),
+        message: message,
+        preferredDate: meetingRequest.preferredDate,
+        preferredTime: meetingRequest.preferredTime,
+        patientQuestions: meetingRequest.patientQuestions || null,
       },
     });
 
@@ -272,6 +277,48 @@ router.patch("/meeting-requests/:requestId/accept-time", async (req, res) => {
   } catch (error) {
     console.error("Error accepting meeting time:", error);
     res.status(500).json({ error: "Failed to accept meeting time" });
+  }
+});
+
+// Add patient questions to an existing meeting request (e.g. after booking popup)
+router.patch("/meeting-requests/:requestId/questions", async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const { patientQuestions } = req.body;
+
+    const meetingRequest = await MeetingRequest.findByIdAndUpdate(
+      requestId,
+      { patientQuestions: patientQuestions || null },
+      { new: true }
+    )
+      .populate("patientId", "username email")
+      .populate("expertId", "username email");
+
+    if (!meetingRequest) {
+      return res.status(404).json({ error: "Meeting request not found" });
+    }
+
+    // Notify researcher that patient added questions
+    const patient = await User.findById(meetingRequest.patientId).lean();
+    await Notification.create({
+      userId: meetingRequest.expertId._id || meetingRequest.expertId,
+      type: "meeting_request",
+      relatedUserId: meetingRequest.patientId._id || meetingRequest.patientId,
+      relatedItemId: meetingRequest._id,
+      relatedItemType: "meeting_request",
+      title: "Patient added questions",
+      message: `${patient?.username || "A patient"} added questions to their meeting request`,
+      metadata: {
+        patientUsername: patient?.username,
+        requestId: meetingRequest._id.toString(),
+        patientQuestions: meetingRequest.patientQuestions,
+      },
+    });
+
+    res.json({ ok: true, meetingRequest });
+  } catch (error) {
+    console.error("Error adding patient questions:", error);
+    res.status(500).json({ error: "Failed to add questions" });
   }
 });
 

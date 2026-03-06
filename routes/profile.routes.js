@@ -589,6 +589,8 @@ router.get("/collabiora-expert/profile/:userId", async (req, res) => {
       isVerified: researcher.isVerified || false,
       onCuraLink: true, // They are on CuraLink
       contactable: true, // They can be contacted (via message request)
+      meetingRate: researcher.meetingRate ?? null, // Rate per 30 min in USD
+      interestedInMeetings: researcher.interestedInMeetings ?? false,
     };
 
     // If ORCID exists, fetch ORCID profile data

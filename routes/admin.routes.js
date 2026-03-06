@@ -20,6 +20,8 @@ import { Subcategory } from "../models/Subcategory.js";
 import { Trial } from "../models/Trial.js";
 import { WorkSubmission } from "../models/WorkSubmission.js";
 import { PageFeedback } from "../models/PageFeedback.js";
+import { MeetingRequest } from "../models/MeetingRequest.js";
+import { Notification } from "../models/Notification.js";
 import { uploadSingle } from "../middleware/upload.js";
 import { uploadImage } from "../services/upload.service.js";
 
@@ -701,6 +703,68 @@ router.delete("/admin/experts/:id", verifyAdmin, async (req, res) => {
   } catch (error) {
     console.error("Error deleting researcher:", error);
     res.status(500).json({ error: "Failed to delete researcher" });
+  }
+});
+
+// ============================================
+// MEETING REQUESTS (ADMIN – cancel/clear for testing)
+// ============================================
+
+// List all meeting requests (optional ?status=pending|accepted|rejected|cancelled)
+router.get("/admin/meeting-requests", verifyAdmin, async (req, res) => {
+  try {
+    const { status } = req.query;
+    const query = status ? { status } : {};
+    const requests = await MeetingRequest.find(query)
+      .populate("patientId", "username email")
+      .populate("expertId", "username email")
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json({ requests, count: requests.length });
+  } catch (error) {
+    console.error("Error listing meeting requests:", error);
+    res.status(500).json({ error: "Failed to list meeting requests" });
+  }
+});
+
+// Cancel/delete one meeting request and clear related notifications
+router.delete("/admin/meeting-requests/:id", verifyAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const request = await MeetingRequest.findByIdAndDelete(id);
+    if (!request) {
+      return res.status(404).json({ error: "Meeting request not found" });
+    }
+    await Notification.deleteMany({
+      relatedItemType: "meeting_request",
+      relatedItemId: request._id,
+    });
+    res.json({ ok: true, message: "Meeting request cancelled and related notifications cleared" });
+  } catch (error) {
+    console.error("Error cancelling meeting request:", error);
+    res.status(500).json({ error: "Failed to cancel meeting request" });
+  }
+});
+
+// Clear all meeting requests and their related notifications (for testing)
+router.post("/admin/meeting-requests/clear-all", verifyAdmin, async (req, res) => {
+  try {
+    const ids = await MeetingRequest.find({}).distinct("_id");
+    const deleted = await MeetingRequest.deleteMany({});
+    if (ids.length > 0) {
+      await Notification.deleteMany({
+        relatedItemType: "meeting_request",
+        relatedItemId: { $in: ids },
+      });
+    }
+    res.json({
+      ok: true,
+      message: "All meeting requests and related notifications cleared",
+      deletedCount: deleted.deletedCount,
+    });
+  } catch (error) {
+    console.error("Error clearing meeting requests:", error);
+    res.status(500).json({ error: "Failed to clear meeting requests" });
   }
 });
 
