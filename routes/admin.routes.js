@@ -55,19 +55,15 @@ const verifyAdmin = (req, res, next) => {
     next();
   } catch (err) {
     if (err.name === "TokenExpiredError") {
-      return res
-        .status(401)
-        .json({
-          error: "Session expired. Please sign in again.",
-          code: "TOKEN_EXPIRED",
-        });
-    }
-    return res
-      .status(401)
-      .json({
-        error: "Invalid or expired token. Please sign in again.",
-        code: "INVALID_TOKEN",
+      return res.status(401).json({
+        error: "Session expired. Please sign in again.",
+        code: "TOKEN_EXPIRED",
       });
+    }
+    return res.status(401).json({
+      error: "Invalid or expired token. Please sign in again.",
+      code: "INVALID_TOKEN",
+    });
   }
 };
 
@@ -358,13 +354,23 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
     const now = new Date();
     const last24 = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const thisWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const thisMonth = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const lastMonthStart = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000); // 30–60 days ago = "last month"
+    // Calendar month boundaries so "this month" / "last month" match Month comparison table
+    const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); // for daily charts only
 
     const [patientUserIds, researcherUserIds] = await Promise.all([
       Profile.find({ role: "patient" }).distinct("userId"),
       Profile.find({ role: "researcher" }).distinct("userId"),
     ]);
+
+    // Month comparison: from February (this year or last if we're in Jan)
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1; // 1-12
+    const febStart =
+      currentMonth >= 2
+        ? new Date(currentYear, 1, 1)
+        : new Date(currentYear - 1, 1, 1);
 
     const [
       patientsLast24,
@@ -384,6 +390,8 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
       signupsResearchersByDay,
       threadsByDay,
       postsByDay,
+      patientsByMonthAgg,
+      researchersByMonthAgg,
     ] = await Promise.all([
       patientUserIds.length
         ? User.countDocuments({
@@ -400,13 +408,13 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
       patientUserIds.length
         ? User.countDocuments({
             _id: { $in: patientUserIds },
-            createdAt: { $gte: thisMonth },
+            createdAt: { $gte: thisMonthStart },
           })
         : 0,
       patientUserIds.length
         ? User.countDocuments({
             _id: { $in: patientUserIds },
-            createdAt: { $gte: lastMonthStart, $lt: thisMonth },
+            createdAt: { $gte: lastMonthStart, $lt: thisMonthStart },
           })
         : 0,
       researcherUserIds.length
@@ -424,13 +432,13 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
       researcherUserIds.length
         ? User.countDocuments({
             _id: { $in: researcherUserIds },
-            createdAt: { $gte: thisMonth },
+            createdAt: { $gte: thisMonthStart },
           })
         : 0,
       researcherUserIds.length
         ? User.countDocuments({
             _id: { $in: researcherUserIds },
-            createdAt: { $gte: lastMonthStart, $lt: thisMonth },
+            createdAt: { $gte: lastMonthStart, $lt: thisMonthStart },
           })
         : 0,
       ForumCategory.countDocuments(),
@@ -443,7 +451,7 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
             {
               $match: {
                 _id: { $in: patientUserIds },
-                createdAt: { $gte: thisMonth },
+                createdAt: { $gte: thirtyDaysAgo },
               },
             },
             {
@@ -462,7 +470,7 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
             {
               $match: {
                 _id: { $in: researcherUserIds },
-                createdAt: { $gte: thisMonth },
+                createdAt: { $gte: thirtyDaysAgo },
               },
             },
             {
@@ -477,7 +485,7 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
           ])
         : [],
       Thread.aggregate([
-        { $match: { createdAt: { $gte: thisMonth } } },
+        { $match: { createdAt: { $gte: thirtyDaysAgo } } },
         {
           $group: {
             _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
@@ -487,7 +495,7 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
         { $sort: { _id: 1 } },
       ]),
       Post.aggregate([
-        { $match: { createdAt: { $gte: thisMonth } } },
+        { $match: { createdAt: { $gte: thirtyDaysAgo } } },
         {
           $group: {
             _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
@@ -496,11 +504,51 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
         },
         { $sort: { _id: 1 } },
       ]),
+      patientUserIds.length
+        ? User.aggregate([
+            {
+              $match: {
+                _id: { $in: patientUserIds },
+                createdAt: { $gte: febStart },
+              },
+            },
+            {
+              $group: {
+                _id: {
+                  year: { $year: "$createdAt" },
+                  month: { $month: "$createdAt" },
+                },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } },
+          ])
+        : [],
+      researcherUserIds.length
+        ? User.aggregate([
+            {
+              $match: {
+                _id: { $in: researcherUserIds },
+                createdAt: { $gte: febStart },
+              },
+            },
+            {
+              $group: {
+                _id: {
+                  year: { $year: "$createdAt" },
+                  month: { $month: "$createdAt" },
+                },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1 } },
+          ])
+        : [],
     ]);
 
-    // Build signups over time (fill missing days with 0)
+    // Build signups over time (fill missing days with 0) — last 30 days for chart
     const dayMap = {};
-    for (let d = new Date(thisMonth); d <= now; d.setDate(d.getDate() + 1)) {
+    for (let d = new Date(thirtyDaysAgo); d <= now; d.setDate(d.getDate() + 1)) {
       const key = d.toISOString().slice(0, 10);
       dayMap[key] = { date: key, patients: 0, researchers: 0 };
     }
@@ -530,7 +578,55 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
         posts: postsByDayMap[date] || 0,
       }));
 
+    // Build month comparison from February to current month (inclusive)
+    const monthNames = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const patientsByMonthMap = {};
+    (patientsByMonthAgg || []).forEach((r) => {
+      const key = `${r._id.year}-${r._id.month}`;
+      patientsByMonthMap[key] = r.count;
+    });
+    const researchersByMonthMap = {};
+    (researchersByMonthAgg || []).forEach((r) => {
+      const key = `${r._id.year}-${r._id.month}`;
+      researchersByMonthMap[key] = r.count;
+    });
+    const monthlyComparison = [];
+    const endYear = now.getFullYear();
+    const endMonth = now.getMonth() + 1;
+    for (let y = febStart.getFullYear(), m = febStart.getMonth() + 1; ; ) {
+      const key = `${y}-${m}`;
+      const patients = patientsByMonthMap[key] || 0;
+      const researchers = researchersByMonthMap[key] || 0;
+      monthlyComparison.push({
+        year: y,
+        month: m,
+        monthLabel: `${monthNames[m - 1]} ${y}`,
+        patients,
+        researchers,
+        total: patients + researchers,
+      });
+      if (y === endYear && m === endMonth) break;
+      m += 1;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      }
+    }
+
+    const monthNamesShort = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    const currentMonthLabel =
+      `${monthNamesShort[now.getMonth()]} ${now.getFullYear()}`;
+
     res.json({
+      currentMonthLabel,
+      totalPatients: patientUserIds.length,
+      totalResearchers: researcherUserIds.length,
       newPatients: {
         last24: patientsLast24,
         thisWeek: patientsThisWeek,
@@ -550,6 +646,7 @@ router.get("/admin/stats/overview", verifyAdmin, async (req, res) => {
       unresolvedFeedbackCount: unresolvedFeedbackCount ?? 0,
       signupsOverTime,
       engagementOverTime,
+      monthlyComparison,
     });
   } catch (error) {
     console.error("Error fetching overview stats:", error);
@@ -739,7 +836,10 @@ router.delete("/admin/meeting-requests/:id", verifyAdmin, async (req, res) => {
       relatedItemType: "meeting_request",
       relatedItemId: request._id,
     });
-    res.json({ ok: true, message: "Meeting request cancelled and related notifications cleared" });
+    res.json({
+      ok: true,
+      message: "Meeting request cancelled and related notifications cleared",
+    });
   } catch (error) {
     console.error("Error cancelling meeting request:", error);
     res.status(500).json({ error: "Failed to cancel meeting request" });
@@ -747,26 +847,30 @@ router.delete("/admin/meeting-requests/:id", verifyAdmin, async (req, res) => {
 });
 
 // Clear all meeting requests and their related notifications (for testing)
-router.post("/admin/meeting-requests/clear-all", verifyAdmin, async (req, res) => {
-  try {
-    const ids = await MeetingRequest.find({}).distinct("_id");
-    const deleted = await MeetingRequest.deleteMany({});
-    if (ids.length > 0) {
-      await Notification.deleteMany({
-        relatedItemType: "meeting_request",
-        relatedItemId: { $in: ids },
+router.post(
+  "/admin/meeting-requests/clear-all",
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const ids = await MeetingRequest.find({}).distinct("_id");
+      const deleted = await MeetingRequest.deleteMany({});
+      if (ids.length > 0) {
+        await Notification.deleteMany({
+          relatedItemType: "meeting_request",
+          relatedItemId: { $in: ids },
+        });
+      }
+      res.json({
+        ok: true,
+        message: "All meeting requests and related notifications cleared",
+        deletedCount: deleted.deletedCount,
       });
+    } catch (error) {
+      console.error("Error clearing meeting requests:", error);
+      res.status(500).json({ error: "Failed to clear meeting requests" });
     }
-    res.json({
-      ok: true,
-      message: "All meeting requests and related notifications cleared",
-      deletedCount: deleted.deletedCount,
-    });
-  } catch (error) {
-    console.error("Error clearing meeting requests:", error);
-    res.status(500).json({ error: "Failed to clear meeting requests" });
-  }
-});
+  },
+);
 
 // ============================================
 // SEARCH LIMIT MANAGEMENT ENDPOINTS (FOR TESTING)
@@ -776,17 +880,15 @@ router.post("/admin/meeting-requests/clear-all", verifyAdmin, async (req, res) =
 router.post("/admin/search/reset-all", verifyAdmin, async (req, res) => {
   try {
     const [ipLimitResult, searchLimitResult] = await Promise.all([
-      IPLimit.updateMany(
-        {},
-        { $set: { searchCount: 0, lastSearchAt: null } },
-      ),
+      IPLimit.updateMany({}, { $set: { searchCount: 0, lastSearchAt: null } }),
       SearchLimit.updateMany(
         {},
         { $set: { searchCount: 0, lastSearchAt: null } },
       ),
     ]);
 
-    const totalReset = ipLimitResult.modifiedCount + searchLimitResult.modifiedCount;
+    const totalReset =
+      ipLimitResult.modifiedCount + searchLimitResult.modifiedCount;
 
     res.json({
       success: true,
@@ -810,21 +912,17 @@ router.get("/admin/search/config", verifyAdmin, async (req, res) => {
     );
 
     // Statistics for deviceId-based limits (IPLimit) + legacy SearchLimit
-    const [
-      deviceCount,
-      deviceTotalSearches,
-      tokenCount,
-      tokenTotalSearches,
-    ] = await Promise.all([
-      IPLimit.countDocuments({}),
-      IPLimit.aggregate([
-        { $group: { _id: null, total: { $sum: "$searchCount" } } },
-      ]),
-      SearchLimit.countDocuments({}),
-      SearchLimit.aggregate([
-        { $group: { _id: null, total: { $sum: "$searchCount" } } },
-      ]),
-    ]);
+    const [deviceCount, deviceTotalSearches, tokenCount, tokenTotalSearches] =
+      await Promise.all([
+        IPLimit.countDocuments({}),
+        IPLimit.aggregate([
+          { $group: { _id: null, total: { $sum: "$searchCount" } } },
+        ]),
+        SearchLimit.countDocuments({}),
+        SearchLimit.aggregate([
+          { $group: { _id: null, total: { $sum: "$searchCount" } } },
+        ]),
+      ]);
 
     res.json({
       maxFreeSearches: MAX_FREE_SEARCHES,
@@ -1163,19 +1261,24 @@ router.post("/admin/community-categories", verifyAdmin, async (req, res) => {
     if (!name || !name.trim()) {
       return res.status(400).json({ error: "name is required" });
     }
-    const slug = name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "")
-      || "category";
+    const slug =
+      name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "") || "category";
     const existing = await CommunityCategory.findOne({ slug });
     if (existing) {
-      return res.status(400).json({ error: "A category with this name already exists" });
+      return res
+        .status(400)
+        .json({ error: "A category with this name already exists" });
     }
     const category = await CommunityCategory.create({
       name: name.trim(),
       slug,
-      sortOrder: typeof sortOrder === "number" ? sortOrder : (await CommunityCategory.countDocuments()),
+      sortOrder:
+        typeof sortOrder === "number"
+          ? sortOrder
+          : await CommunityCategory.countDocuments(),
       defaultOpen: !!defaultOpen,
       headingColor: headingColor || "#2F3C96",
     });
@@ -1186,48 +1289,60 @@ router.post("/admin/community-categories", verifyAdmin, async (req, res) => {
   }
 });
 
-router.patch("/admin/community-categories/:id", verifyAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, sortOrder, defaultOpen, headingColor } = req.body;
-    const category = await CommunityCategory.findById(id);
-    if (!category) {
-      return res.status(404).json({ error: "Category not found" });
+router.patch(
+  "/admin/community-categories/:id",
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { name, sortOrder, defaultOpen, headingColor } = req.body;
+      const category = await CommunityCategory.findById(id);
+      if (!category) {
+        return res.status(404).json({ error: "Category not found" });
+      }
+      if (name !== undefined && name.trim()) {
+        category.name = name.trim();
+        category.slug =
+          name
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/(^-|-$)/g, "") || "category";
+      }
+      if (sortOrder !== undefined) category.sortOrder = Number(sortOrder);
+      if (defaultOpen !== undefined) category.defaultOpen = !!defaultOpen;
+      if (headingColor !== undefined)
+        category.headingColor = headingColor || "#2F3C96";
+      await category.save();
+      res.json({ ok: true, category });
+    } catch (error) {
+      console.error("Error updating community category:", error);
+      res.status(500).json({ error: "Failed to update community category" });
     }
-    if (name !== undefined && name.trim()) {
-      category.name = name.trim();
-      category.slug = name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/(^-|-$)/g, "")
-        || "category";
-    }
-    if (sortOrder !== undefined) category.sortOrder = Number(sortOrder);
-    if (defaultOpen !== undefined) category.defaultOpen = !!defaultOpen;
-    if (headingColor !== undefined) category.headingColor = headingColor || "#2F3C96";
-    await category.save();
-    res.json({ ok: true, category });
-  } catch (error) {
-    console.error("Error updating community category:", error);
-    res.status(500).json({ error: "Failed to update community category" });
-  }
-});
+  },
+);
 
-router.delete("/admin/community-categories/:id", verifyAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const category = await CommunityCategory.findById(id);
-    if (!category) {
-      return res.status(404).json({ error: "Category not found" });
+router.delete(
+  "/admin/community-categories/:id",
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const category = await CommunityCategory.findById(id);
+      if (!category) {
+        return res.status(404).json({ error: "Category not found" });
+      }
+      await Community.updateMany(
+        { categoryId: id },
+        { $set: { categoryId: null } },
+      );
+      await CommunityCategory.findByIdAndDelete(id);
+      res.json({ ok: true, message: "Category deleted; communities unlinked" });
+    } catch (error) {
+      console.error("Error deleting community category:", error);
+      res.status(500).json({ error: "Failed to delete community category" });
     }
-    await Community.updateMany({ categoryId: id }, { $set: { categoryId: null } });
-    await CommunityCategory.findByIdAndDelete(id);
-    res.json({ ok: true, message: "Category deleted; communities unlinked" });
-  } catch (error) {
-    console.error("Error deleting community category:", error);
-    res.status(500).json({ error: "Failed to delete community category" });
-  }
-});
+  },
+);
 
 // ============================================
 // COMMUNITY MANAGEMENT (admin)
@@ -1362,14 +1477,18 @@ router.patch("/admin/communities/:id", verifyAdmin, async (req, res) => {
       }
       const existing = await Community.findOne({ slug, _id: { $ne: id } });
       if (existing) {
-        return res.status(400).json({ error: "A community with this name already exists" });
+        return res
+          .status(400)
+          .json({ error: "A community with this name already exists" });
       }
       community.slug = slug;
     }
     if (description !== undefined) community.description = description || "";
     if (coverImage !== undefined) community.coverImage = coverImage || "";
-    if (thumbnailUrl !== undefined && !coverImage) community.coverImage = thumbnailUrl || "";
-    if (tags !== undefined) community.tags = Array.isArray(tags) ? tags : community.tags;
+    if (thumbnailUrl !== undefined && !coverImage)
+      community.coverImage = thumbnailUrl || "";
+    if (tags !== undefined)
+      community.tags = Array.isArray(tags) ? tags : community.tags;
     if (isOfficial !== undefined) community.isOfficial = !!isOfficial;
     if (categoryId !== undefined) community.categoryId = categoryId || null;
     if (typeof iconSvg === "string") community.iconSvg = iconSvg;
